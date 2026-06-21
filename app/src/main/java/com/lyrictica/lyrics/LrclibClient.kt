@@ -75,9 +75,10 @@ internal class MusixmatchClient(
     }
 
     fun search(
-        trackName: String,
+        trackName: String? = null,
         artistName: String? = null,
-        albumName: String? = null
+        albumName: String? = null,
+        query: String? = null
     ): List<MusixmatchTrackRecord> {
         if (BuildConfig.WORKER_BASE_URL.isBlank()) {
             Log.w(TAG, "WORKER_BASE_URL is blank; skipping track search")
@@ -85,7 +86,8 @@ internal class MusixmatchClient(
         }
 
         val params = linkedMapOf<String, String>()
-        params["q_track"] = trackName
+        query?.takeIf { it.isNotBlank() }?.let { params["q"] = it }
+        trackName?.takeIf { it.isNotBlank() }?.let { params["q_track"] = it }
         LyricsQueryNormalizer.text(artistName)?.let { params["q_artist"] = it }
         LyricsQueryNormalizer.text(albumName)?.let { params["q_album"] = it }
         params["page_size"] = "10"
@@ -214,6 +216,53 @@ internal class MusixmatchClient(
             albumName = track.albumName,
             durationSec = track.durationSec,
             instrumental = track.instrumental
+        )
+    }
+
+    fun getSubtitleTranslation(trackId: Long, selectedLanguage: String): MusixmatchLyrics? {
+        val body = apiBodyOrNull(
+            "track.subtitle.translation.get",
+            mapOf(
+                "track_id" to trackId.toString(),
+                "selected_language" to selectedLanguage,
+                "subtitle_format" to "lrc"
+            )
+        ) ?: return null
+
+        val subtitle = body.optJSONObject("subtitle_translation") ?: body.optJSONObject("subtitle") ?: return null
+        val subtitleBody = subtitle.optString("subtitle_body")
+        if (subtitleBody.isBlank()) return null
+        val parsed = MusixmatchLyricsParsers.parseSubtitleBody(subtitleBody) ?: return null
+        return parsed.toCacheLyrics(
+            trackId = trackId,
+            trackName = "",
+            artistName = null,
+            albumName = null,
+            durationSec = 0,
+            instrumental = false
+        )
+    }
+
+    fun getLyricsTranslation(trackId: Long, selectedLanguage: String): MusixmatchLyrics? {
+        val body = apiBodyOrNull(
+            "track.lyrics.translation.get",
+            mapOf(
+                "track_id" to trackId.toString(),
+                "selected_language" to selectedLanguage
+            )
+        ) ?: return null
+
+        val lyrics = body.optJSONObject("lyrics_translation") ?: body.optJSONObject("lyrics") ?: return null
+        val lyricsBody = lyrics.optString("lyrics_body")
+        if (lyricsBody.isBlank()) return null
+        val parsed = MusixmatchLyricsParsers.parseLyricsBody(lyricsBody) ?: return null
+        return parsed.toCacheLyrics(
+            trackId = trackId,
+            trackName = "",
+            artistName = null,
+            albumName = null,
+            durationSec = 0,
+            instrumental = false
         )
     }
 

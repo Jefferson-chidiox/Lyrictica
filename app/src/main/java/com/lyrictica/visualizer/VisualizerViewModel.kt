@@ -95,6 +95,13 @@ data class MusixmatchArtistState(
     val error: String? = null
 )
 
+data class TranslationState(
+    val languageCode: String? = null,
+    val isLoading: Boolean = false,
+    val translations: Map<String, ParsedLyrics> = emptyMap(),
+    val error: String? = null
+)
+
 class VisualizerViewModel(application: Application) : AndroidViewModel(application) {
 
     private val playerController = PlayerController(application)
@@ -144,6 +151,9 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
 
     private val _musixmatchArtistState = MutableStateFlow(MusixmatchArtistState())
     val musixmatchArtistState: StateFlow<MusixmatchArtistState> = _musixmatchArtistState.asStateFlow()
+
+    private val _translationState = MutableStateFlow(TranslationState())
+    val translationState: StateFlow<TranslationState> = _translationState.asStateFlow()
 
     private val musixmatchClient = com.lyrictica.lyrics.MusixmatchClient(userAgent = "Lyrictica/1.0")
 
@@ -1647,7 +1657,51 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     private fun resolvedLyrics(): ParsedLyrics? {
+        val transState = _translationState.value
+        val lang = transState.languageCode
+        if (lang != null) {
+            val trans = transState.translations[lang]
+            if (trans != null) return trans
+        }
         return _availableLyrics.value ?: _lyricsUiState.value.parsed
+    }
+
+    fun setTranslationLanguage(languageCode: String?) {
+        val currentTrackId = _availableLyrics.value?.musixmatchTrackId ?: _lyricsUiState.value.parsed?.musixmatchTrackId
+        if (languageCode == null || currentTrackId == null) {
+            _translationState.update { it.copy(languageCode = null) }
+            return
+        }
+
+        val currentState = _translationState.value
+        if (currentState.translations.containsKey(languageCode)) {
+            _translationState.update { it.copy(languageCode = languageCode, error = null) }
+            return
+        }
+
+        _translationState.update { it.copy(languageCode = languageCode, isLoading = true, error = null) }
+
+        viewModelScope.launch {
+            val translation = runCatching {
+                lyricsRepository.fetchTranslation(currentTrackId, languageCode)
+            }.getOrNull()
+
+            if (translation != null) {
+                _translationState.update {
+                    it.copy(
+                        isLoading = false,
+                        translations = it.translations + (languageCode to translation)
+                    )
+                }
+            } else {
+                _translationState.update {
+                    it.copy(
+                        isLoading = false,
+                        error = "Failed to load translation"
+                    )
+                }
+            }
+        }
     }
 
     private fun clearMelodyReference() {
@@ -1978,6 +2032,7 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
     ) {
         lyricsJob?.cancel()
         _availableLyrics.value = null
+        _translationState.value = TranslationState()
         clearMelodyReference()
         karaokeOriginalSourceUri = uri
         _lyricsUiState.value = _lyricsUiState.value.loadingLyrics()

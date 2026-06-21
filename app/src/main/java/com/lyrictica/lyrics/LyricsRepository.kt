@@ -48,12 +48,22 @@ internal class LyricsRepository(
         )?.let { toParsed(it) }
     }
 
+    suspend fun fetchTranslation(trackId: Long, selectedLanguage: String): ParsedLyrics? = withContext(Dispatchers.IO) {
+        val subtitle = client.getSubtitleTranslation(trackId, selectedLanguage)
+        if (subtitle != null) return@withContext toParsed(subtitle)
+        
+        val lyrics = client.getLyricsTranslation(trackId, selectedLanguage)
+        if (lyrics != null) return@withContext toParsed(lyrics)
+        
+        null
+    }
+
     private fun toParsed(lyrics: MusixmatchLyrics): ParsedLyrics? {
         val richSync = lyrics.richSyncBody
         val synced = lyrics.syncedLyricsLrc
         val plain = lyrics.plainLyrics
 
-        return when {
+        val parsed = when {
             !richSync.isNullOrBlank() -> MusixmatchLyricsParsers.parseRichsyncBody(richSync)
             !synced.isNullOrBlank() -> LrcParser.parse(synced)
             !plain.isNullOrBlank() -> {
@@ -65,5 +75,6 @@ internal class LyricsRepository(
             }
             else -> null
         }
+        return parsed?.copy(musixmatchTrackId = lyrics.trackId.takeIf { it > 0L })
     }
 }

@@ -86,6 +86,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -129,6 +130,7 @@ internal fun VisualizerScreen(
     val lyricsUiState by viewModel.lyricsUiState.collectAsState()
     val karaokeState by viewModel.karaokeUiState.collectAsState()
     val availableLyrics by viewModel.availableLyrics.collectAsState()
+    val translationState by viewModel.translationState.collectAsState()
     val lyricsPreviewState by viewModel.lyricsPreviewState.collectAsState()
     val smoothedFeatures by viewModel.smoothedFeatures.collectAsState()
     val screenTheme by viewModel.screenTheme.collectAsState()
@@ -555,6 +557,11 @@ internal fun VisualizerScreen(
                     controlTint = controlTint,
                     gameSelected = showGameDialog || showGamePanel,
                     aboutSelected = musixmatchArtistState.isVisible,
+                    translationState = translationState,
+                    onTranslationLanguageSelected = {
+                        registerUiInteraction()
+                        viewModel.setTranslationLanguage(it)
+                    },
                     onLyricsToggle = { toggleLyricsOverlay() },
                     onLyricsAnchorChanged = { lyricsTooltipAnchor = it },
                     onAutoFollowChange = {
@@ -991,6 +998,8 @@ private fun MinimalVisualizerPlaybackChrome(
     controlTint: Color,
     gameSelected: Boolean,
     aboutSelected: Boolean,
+    translationState: com.lyrictica.visualizer.TranslationState,
+    onTranslationLanguageSelected: (String?) -> Unit,
     onLyricsToggle: () -> Unit,
     onLyricsAnchorChanged: (Rect) -> Unit,
     onAutoFollowChange: (Boolean) -> Unit,
@@ -1104,25 +1113,90 @@ private fun MinimalVisualizerPlaybackChrome(
                 }
 
                 if (activeSong != null) {
-                    FilledTonalIconButton(
-                        onClick = onLyricsToggle,
+                    androidx.compose.foundation.layout.Column(
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .padding(10.dp)
-                            .size(38.dp)
-                            .onGloballyPositioned { coords ->
-                                onLyricsAnchorChanged(coords.boundsInWindow())
-                            },
-                        colors = androidx.compose.material3.IconButtonDefaults.filledTonalIconButtonColors(
-                            containerColor = Color.Black.copy(alpha = 0.24f),
-                            contentColor = if (lyricsVisible) accent else Color.White.copy(alpha = 0.92f)
-                        )
+                            .padding(10.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
                     ) {
-                        Icon(
-                            imageVector = if (lyricsVisible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                            contentDescription = if (lyricsVisible) "Hide lyrics overlay" else "Show lyrics overlay",
-                            modifier = Modifier.size(18.dp)
-                        )
+                        FilledTonalIconButton(
+                            onClick = onLyricsToggle,
+                            modifier = Modifier
+                                .size(38.dp)
+                                .onGloballyPositioned { coords ->
+                                    onLyricsAnchorChanged(coords.boundsInWindow())
+                                },
+                            colors = androidx.compose.material3.IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = Color.Black.copy(alpha = 0.24f),
+                                contentColor = if (lyricsVisible) accent else Color.White.copy(alpha = 0.92f)
+                            )
+                        ) {
+                            Icon(
+                                imageVector = if (lyricsVisible) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
+                                contentDescription = if (lyricsVisible) "Hide lyrics overlay" else "Show lyrics overlay",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+
+                        if (lyricsVisible && hasAvailableLyrics) {
+                            var showTranslationMenu by remember { mutableStateOf(false) }
+                            Box {
+                                FilledTonalIconButton(
+                                    onClick = { showTranslationMenu = true },
+                                    modifier = Modifier.size(38.dp),
+                                    colors = androidx.compose.material3.IconButtonDefaults.filledTonalIconButtonColors(
+                                        containerColor = Color.Black.copy(alpha = 0.24f),
+                                        contentColor = if (translationState.languageCode != null) accent else Color.White.copy(alpha = 0.92f)
+                                    )
+                                ) {
+                                    if (translationState.isLoading) {
+                                        androidx.compose.material3.CircularProgressIndicator(
+                                            modifier = Modifier.size(16.dp),
+                                            color = accent,
+                                            strokeWidth = 2.dp
+                                        )
+                                    } else {
+                                        androidx.compose.material3.Text(
+                                            text = "A/文",
+                                            color = if (translationState.languageCode != null) accent else Color.White,
+                                            fontSize = 14.sp,
+                                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                                        )
+                                    }
+                                }
+
+                                androidx.compose.material3.DropdownMenu(
+                                    expanded = showTranslationMenu,
+                                    onDismissRequest = { showTranslationMenu = false },
+                                    modifier = Modifier.background(Color.Black.copy(alpha = 0.85f))
+                                ) {
+                                    val languages = mapOf(
+                                        null to "Original",
+                                        "es" to "Spanish",
+                                        "fr" to "French",
+                                        "de" to "German",
+                                        "it" to "Italian",
+                                        "pt" to "Portuguese"
+                                    )
+                                    languages.forEach { (code, name) ->
+                                        androidx.compose.material3.DropdownMenuItem(
+                                            text = { 
+                                                Text(
+                                                    name, 
+                                                    color = if (translationState.languageCode == code) accent else Color.White,
+                                                    fontSize = 14.sp
+                                                ) 
+                                            },
+                                            onClick = {
+                                                onTranslationLanguageSelected(code)
+                                                showTranslationMenu = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -1828,7 +1902,7 @@ private fun MusicArtworkBackdrop(
         )
     )
     val artworkAlpha by animateFloatAsState(
-        targetValue = if (isLyricsBackdropActive) 0.34f else 1f,
+        targetValue = if (isLyricsBackdropActive) 0.5f else 1f,
         animationSpec = androidx.compose.animation.core.tween(durationMillis = 320),
         label = "artworkBackdropAlpha"
     )
@@ -1856,7 +1930,7 @@ private fun MusicArtworkBackdrop(
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 alpha = artworkAlpha,
-                modifier = Modifier.fillMaxSize(),
+                modifier = if (isLyricsBackdropActive) Modifier.fillMaxSize().blur(24.dp) else Modifier.fillMaxSize(),
                 loading = {
                     Box(
                         modifier = Modifier
@@ -1881,7 +1955,7 @@ private fun MusicArtworkBackdrop(
                             Brush.verticalGradient(
                                 colors = listOf(
                                     theme.backgroundTop.copy(alpha = 0.20f * backdropDimAlpha),
-                                    Color.Black.copy(alpha = 0.75f * backdropDimAlpha),
+                                    Color.Black.copy(alpha = 0.5f * backdropDimAlpha),
                                     theme.backgroundBottom.copy(alpha = 0.25f * backdropDimAlpha)
                                 )
                             )
@@ -1978,7 +2052,7 @@ private fun SongArtwork(
                 SubcomposeAsyncImage(
                     model = artworkUri,
                     contentDescription = "Album art",
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = if (dimmed) Modifier.fillMaxSize().blur(16.dp) else Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop,
                     loading = {
                         Box(
@@ -2013,7 +2087,7 @@ private fun SongArtwork(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.26f))
+                        .background(Color.Black.copy(alpha = 0.5f))
                 )
             }
         }

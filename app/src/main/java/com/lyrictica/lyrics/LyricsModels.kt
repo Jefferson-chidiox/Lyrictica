@@ -14,7 +14,8 @@ data class LyricLine(
 
 data class ParsedLyrics(
     val lines: List<LyricLine>,
-    val isSynced: Boolean
+    val isSynced: Boolean,
+    val musixmatchTrackId: Long? = null
 ) {
     val hasWordSync: Boolean
         get() = lines.any { line -> line.words.any { word -> word.text.isNotBlank() } }

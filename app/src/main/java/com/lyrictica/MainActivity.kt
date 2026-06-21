@@ -49,6 +49,7 @@ import com.oss.euphoriae.ui.theme.Typography
 import com.oss.euphoriae.ui.viewmodel.MusicViewModel
 
 private enum class RootScreen {
+    SPLASH,
     VISUALIZER,
     LIBRARY
 }
@@ -125,7 +126,7 @@ private fun LyricticaApp(
     val playbackQueueState by visualizerViewModel.nowPlayingState.collectAsStateWithLifecycle()
     val visualizerPlaybackState by visualizerViewModel.playbackState.collectAsStateWithLifecycle()
     val registeredQueues by visualizerViewModel.queueLibrary.collectAsStateWithLifecycle()
-    var currentScreen by remember { mutableStateOf(RootScreen.LIBRARY) }
+    var currentScreen by remember { mutableStateOf(RootScreen.SPLASH) }
     var selectedGameSong by remember { mutableStateOf<Song?>(null) }
     var pendingGameLaunch by remember { mutableStateOf<GameLaunchRequest?>(null) }
     var pendingLibraryDestination by remember { mutableStateOf<Destination?>(null) }
@@ -232,6 +233,19 @@ private fun LyricticaApp(
                         currentScreen = RootScreen.LIBRARY
                     },
                     modifier = Modifier.fillMaxSize()
+                )
+            }
+
+            AnimatedVisibility(
+                visible = currentScreen == RootScreen.SPLASH,
+                modifier = Modifier.fillMaxSize(),
+                enter = fadeIn(animationSpec = tween(300)),
+                exit = fadeOut(animationSpec = tween(500))
+            ) {
+                com.lyrictica.ui.SplashScreen(
+                    onSplashFinished = {
+                        currentScreen = RootScreen.LIBRARY
+                    }
                 )
             }
 

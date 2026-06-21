@@ -49,7 +49,7 @@ internal class HomeSearchRepository(
             }
         }
         val musixmatchDeferred = async {
-            runCatching { musixmatchClient.search(trackName = musixmatchQuery) }
+            runCatching { musixmatchClient.search(query = musixmatchQuery) }
                 .getOrDefault(emptyList())
         }
 
