@@ -940,10 +940,20 @@ class MusicViewModel(application: Application) : AndroidViewModel(application) {
     }
     
     private fun getMediaUri(song: Song): Uri {
-        return if (song.data.startsWith("http://") || song.data.startsWith("https://") || song.data.startsWith("content://")) {
-            Uri.parse(song.data)
-        } else {
-            ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
+        return when {
+            song.data.startsWith("http://") || song.data.startsWith("https://") || song.data.startsWith("content://") -> {
+                Uri.parse(song.data)
+            }
+            song.id > 0L -> {
+                ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
+            }
+            song.data.isNotEmpty() -> {
+                // File path without a MediaStore ID — use file:// URI
+                Uri.fromFile(java.io.File(song.data))
+            }
+            else -> {
+                ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, song.id)
+            }
         }
     }
     

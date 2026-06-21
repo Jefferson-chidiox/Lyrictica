@@ -140,13 +140,26 @@ object WidgetQueueManager {
      * Get media URI for a song ID or stream URL
      */
     fun getMediaUri(songId: Long, data: String): Uri {
-        return if (data.startsWith("http://") || data.startsWith("https://") || data.startsWith("content://")) {
-            Uri.parse(data)
-        } else {
-            ContentUris.withAppendedId(
-                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
-                songId
-            )
+        return when {
+            data.startsWith("http://") || data.startsWith("https://") || data.startsWith("content://") -> {
+                Uri.parse(data)
+            }
+            songId > 0L -> {
+                ContentUris.withAppendedId(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    songId
+                )
+            }
+            data.isNotEmpty() -> {
+                // File path without a MediaStore ID — use file:// URI
+                Uri.fromFile(java.io.File(data))
+            }
+            else -> {
+                ContentUris.withAppendedId(
+                    MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                    songId
+                )
+            }
         }
     }
 }

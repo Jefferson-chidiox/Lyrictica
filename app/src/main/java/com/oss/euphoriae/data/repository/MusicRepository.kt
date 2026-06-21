@@ -291,6 +291,68 @@ class MusicRepository(
         if (tree == null || !tree.canRead()) return@withContext 0
 
         val retriever = android.media.MediaMetadataRetriever()
+
+        // Try to resolve the real file path from a SAF document URI.
+        // This allows us to look up the song in MediaStore to get its real ID.
+        fun resolveFilePath(docUri: Uri): String? {
+            // SAF document URIs from external storage use the "document" authority
+            // and encode the path as e.g. "primary:Music/song.mp3"
+            if (docUri.authority == "com.android.externalstorage.documents") {
+                val docId = try {
+                    android.provider.DocumentsContract.getDocumentId(docUri)
+                } catch (e: Exception) { null }
+                if (docId != null) {
+                    val split = docId.split(":", limit = 2)
+                    if (split.size == 2) {
+                        val storageType = split[0]
+                        val relativePath = split[1]
+                        if (storageType.equals("primary", ignoreCase = true)) {
+                            return android.os.Environment.getExternalStorageDirectory().absolutePath + "/" + relativePath
+                        }
+                        // Try SD card or other volumes
+                        val externalDirs = context.getExternalFilesDirs(null)
+                        for (dir in externalDirs) {
+                            if (dir == null) continue
+                            val path = dir.absolutePath
+                            // path is like /storage/<volume-id>/Android/data/<pkg>/files
+                            val volumeRoot = path.substringBefore("/Android/")
+                            if (volumeRoot.contains(storageType, ignoreCase = true)) {
+                                return "$volumeRoot/$relativePath"
+                            }
+                        }
+                    }
+                }
+            }
+            return null
+        }
+
+        // Look up a file path in MediaStore to get its real MediaStore ID and album art URI
+        fun lookupMediaStoreId(filePath: String): Pair<Long, String?>? {
+            val projection = arrayOf(
+                MediaStore.Audio.Media._ID,
+                MediaStore.Audio.Media.ALBUM_ID
+            )
+            val selection = "${MediaStore.Audio.Media.DATA} = ?"
+            val selectionArgs = arrayOf(filePath)
+            context.contentResolver.query(
+                MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val id = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Audio.Media._ID))
+                    val albumId = cursor.getLong(cursor.getColumnIndexOrThrow(MediaStore.Audio.Media.ALBUM_ID))
+                    val albumArtUri = ContentUris.withAppendedId(
+                        Uri.parse("content://media/external/audio/albumart"),
+                        albumId
+                    ).toString()
+                    return id to albumArtUri
+                }
+            }
+            return null
+        }
         
         fun traverse(dir: androidx.documentfile.provider.DocumentFile) {
             val files = dir.listFiles()
@@ -308,38 +370,47 @@ class MusicRepository(
                             val durationStr = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)
                             val duration = durationStr?.toLongOrNull() ?: 0L
                             
-                            val albumId = (album + artist).hashCode().toLong()
+                            // Try to resolve the real file path and look up MediaStore ID
+                            val filePath = resolveFilePath(file.uri)
+                            val mediaStoreResult = filePath?.let { lookupMediaStoreId(it) }
                             
-                            var albumArtUriStr: String? = null
-                            val picture = retriever.embeddedPicture
-                            if (picture != null) {
-                                try {
-                                    val cacheDir = java.io.File(context.cacheDir, "album_art")
-                                    if (!cacheDir.exists()) cacheDir.mkdirs()
-                                    val artFile = java.io.File(cacheDir, "art_$albumId.jpg")
-                                    if (!artFile.exists()) {
-                                        java.io.FileOutputStream(artFile).use { fos ->
-                                            fos.write(picture)
+                            val songId = mediaStoreResult?.first ?: 0L
+                            val songData = filePath ?: file.uri.toString()
+                            
+                            val albumIdFromHash = (album + artist).hashCode().toLong()
+                            
+                            var albumArtUriStr: String? = mediaStoreResult?.second
+                            if (albumArtUriStr == null) {
+                                val picture = retriever.embeddedPicture
+                                if (picture != null) {
+                                    try {
+                                        val cacheDir = java.io.File(context.cacheDir, "album_art")
+                                        if (!cacheDir.exists()) cacheDir.mkdirs()
+                                        val artFile = java.io.File(cacheDir, "art_$albumIdFromHash.jpg")
+                                        if (!artFile.exists()) {
+                                            java.io.FileOutputStream(artFile).use { fos ->
+                                                fos.write(picture)
+                                            }
                                         }
+                                        albumArtUriStr = Uri.fromFile(artFile).toString()
+                                    } catch (e: Exception) {
+                                        android.util.Log.w("MusicRepository", "Failed to save album art", e)
                                     }
-                                    albumArtUriStr = Uri.fromFile(artFile).toString()
-                                } catch (e: Exception) {
-                                    android.util.Log.w("MusicRepository", "Failed to save album art", e)
                                 }
                             }
                             
                             val song = Song(
-                                id = 0, // Auto-generated
+                                id = songId,
                                 title = title,
                                 artist = artist,
                                 album = album,
-                                albumId = albumId,
+                                albumId = albumIdFromHash,
                                 duration = duration,
-                                data = file.uri.toString(),
+                                data = songData,
                                 albumArtUri = albumArtUriStr,
                                 mimeType = mimeType,
-                                dateAdded = file.lastModified() * 1000L,
-                                dateModified = file.lastModified() * 1000L,
+                                dateAdded = file.lastModified(),
+                                dateModified = file.lastModified(),
                                 genre = retriever.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_GENRE) ?: ""
                             )
                             songs.add(song)

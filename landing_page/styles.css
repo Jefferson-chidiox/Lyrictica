@@ -1,12 +1,12 @@
 :root {
-    --bg-deep: #04070D;
-    --bg-gradient: #091220;
+    --bg-deep: #050814;
+    --bg-gradient: #0b112c;
     --text-main: #FFFFFF;
-    --text-muted: #8E9BB0;
-    --accent-blue: #00D4FF;
-    --accent-purple: #B200FF;
-    --accent-red: #FF0055;
-    --accent-green: #00FF88;
+    --text-muted: #A0ABC0;
+    --accent-blue: #00f0ff; /* Cyan from image */
+    --accent-purple: #b657ff; /* Purple from image */
+    --accent-red: #7b2cbf; /* Darker purple */
+    --accent-green: #48cae4; /* Soft cyan */
     
     --font-heading: 'Space Grotesk', sans-serif;
     --font-body: 'Outfit', sans-serif;
@@ -363,30 +363,30 @@ footer {
     font-size: 0.8rem;
 }
 
-/* Mock Visualizer Animation */
-.hero-visualizer-mock {
+/* Animated Hero Image */
+.hero-visualizer-image {
     width: 100%;
     max-width: 800px;
-    height: 150px;
-    margin-top: 20px;
+    margin-top: 40px;
     position: relative;
     display: flex;
-    align-items: flex-end;
-    gap: 4px;
-    opacity: 0.8;
+    justify-content: center;
+    perspective: 1000px;
 }
 
-.mock-wave {
-    flex: 1;
-    background: var(--accent-blue);
-    border-radius: 4px 4px 0 0;
-    animation: waveAnim 1s infinite alternate ease-in-out;
-    box-shadow: 0 -5px 15px rgba(0, 212, 255, 0.3);
+.hero-image {
+    width: 100%;
+    border-radius: 20px;
+    box-shadow: 0 0 50px rgba(0, 240, 255, 0.2), 0 0 100px rgba(182, 87, 255, 0.15);
+    animation: floatImage 6s ease-in-out infinite;
+    transform-style: preserve-3d;
+    border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-@keyframes waveAnim {
-    0% { height: 10%; }
-    100% { height: 80%; }
+@keyframes floatImage {
+    0% { transform: translateY(0px) rotateX(2deg) rotateY(-2deg); box-shadow: 0 0 50px rgba(0, 240, 255, 0.2), 0 0 100px rgba(182, 87, 255, 0.15); }
+    50% { transform: translateY(-20px) rotateX(-2deg) rotateY(2deg); box-shadow: 0 20px 60px rgba(0, 240, 255, 0.4), 0 20px 120px rgba(182, 87, 255, 0.3); }
+    100% { transform: translateY(0px) rotateX(2deg) rotateY(-2deg); box-shadow: 0 0 50px rgba(0, 240, 255, 0.2), 0 0 100px rgba(182, 87, 255, 0.15); }
 }
 
 /* Animations */
