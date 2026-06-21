@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">Lyrictica</string>
+    <string name="pick_audio">Pick Audio</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="no_track_selected">No track selected</string>
+    <string name="widget_description">Music player controls widget</string>
+    <string name="no_song_playing">No song playing</string>
+    <string name="album_art">Album Art</string>
+    <string name="previous">Previous</string>
+    <string name="next">Next</string>
+</resources>
