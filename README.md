@@ -22,7 +22,7 @@ Jump straight from discovery into play mode. Compete on the Arcade leaderboard w
 Advanced vocal extraction isolates backing tracks from your local music files on the fly. Belt it out and challenge your friends!
 
 ### 📝 Synchronized Lyrics
-Never miss a beat with rich, synchronized lyrics. Lyrics are cached locally for a seamless offline singing experience.
+Never miss a beat with rich, synchronized lyrics.
 
 ### 🔒 100% Offline First
 No internet? No problem. Lyrictica is designed from the ground up to provide a premium, uninterrupted experience completely offline.
