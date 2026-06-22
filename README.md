@@ -40,4 +40,3 @@ Our signature band-isolated wave hierarchy. Watch the screen shift dynamically w
 
 ---
 
-*Privacy First: No microphone permissions required. Audio is analyzed locally and safely.*
