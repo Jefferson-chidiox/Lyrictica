@@ -49,8 +49,22 @@ internal class HomeSearchRepository(
             }
         }
         val musixmatchDeferred = async {
-            runCatching { musixmatchClient.search(query = musixmatchQuery) }
-                .getOrDefault(emptyList())
+            coroutineScope {
+                val trackMatchesDeferred = async {
+                    runCatching { musixmatchClient.search(trackName = musixmatchQuery) }
+                        .getOrDefault(emptyList())
+                }
+                val artistMatchesDeferred = async {
+                    runCatching { musixmatchClient.search(artistName = trimmedQuery) }
+                        .getOrDefault(emptyList())
+                }
+
+                (trackMatchesDeferred.await() + artistMatchesDeferred.await())
+                    .distinctBy { record ->
+                        record.trackId.takeIf { it > 0L }?.toString()
+                            ?: "${normalizeSearchText(record.trackName)}|${normalizeSearchText(record.artistName)}|${normalizeSearchText(record.albumName)}"
+                    }
+            }
         }
 
         val localCatalog = localSongsDeferred.await()

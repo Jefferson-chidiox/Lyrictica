@@ -1670,12 +1670,24 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         val currentTrackId = _availableLyrics.value?.musixmatchTrackId ?: _lyricsUiState.value.parsed?.musixmatchTrackId
         if (languageCode == null || currentTrackId == null) {
             _translationState.update { it.copy(languageCode = null) }
+            val originalLyrics = _availableLyrics.value
+            if (originalLyrics != null) {
+                _lyricsUiState.value = _lyricsUiState.value.withLyricsResult(originalLyrics)
+            }
+            if (languageCode == null && currentTrackId != null) {
+                android.widget.Toast.makeText(app, "Showing original lyrics", android.widget.Toast.LENGTH_SHORT).show()
+            }
             return
         }
 
         val currentState = _translationState.value
         if (currentState.translations.containsKey(languageCode)) {
             _translationState.update { it.copy(languageCode = languageCode, error = null) }
+            val cachedTranslation = currentState.translations[languageCode]
+            if (cachedTranslation != null) {
+                _lyricsUiState.value = _lyricsUiState.value.withLyricsResult(cachedTranslation)
+                android.widget.Toast.makeText(app, "Translation loaded", android.widget.Toast.LENGTH_SHORT).show()
+            }
             return
         }
 
@@ -1693,13 +1705,21 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
                         translations = it.translations + (languageCode to translation)
                     )
                 }
+                _lyricsUiState.value = _lyricsUiState.value.withLyricsResult(translation)
+                android.widget.Toast.makeText(app, "Translation loaded successfully", android.widget.Toast.LENGTH_SHORT).show()
             } else {
                 _translationState.update {
                     it.copy(
                         isLoading = false,
-                        error = "Failed to load translation"
+                        error = "Failed to load translation",
+                        languageCode = null
                     )
                 }
+                val originalLyrics = _availableLyrics.value
+                if (originalLyrics != null) {
+                    _lyricsUiState.value = _lyricsUiState.value.withLyricsResult(originalLyrics)
+                }
+                android.widget.Toast.makeText(app, "Failed to load translation", android.widget.Toast.LENGTH_SHORT).show()
             }
         }
     }

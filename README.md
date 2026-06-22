@@ -3,7 +3,7 @@
   
   <h1>Lyrictica</h1>
   <p><b>MVP Version Now Available</b></p>
-  <p><a href="landing_page/Lyrictica_mvp.apk?raw=true"><b>⬇️ Download APK</b></a></p>
+  <p><a href="https://github.com/Jefferson-chidiox/Lyrictica/raw/main/landing_page/Lyrictica_mvp.apk"><b>⬇️ Download APK</b></a></p>
   <h2>Experience Music Like Never Before</h2>
   <p>An elegant, all-in-one music ecosystem. Discover your songs through a high-fidelity visualizer, synchronized lyrics, AI-powered karaoke, and immersive arcade rhythm games.</p>
 </div>
