@@ -40,7 +40,6 @@ import com.oss.euphoriae.data.preferences.ThemeColorOption
 import com.oss.euphoriae.data.preferences.ThemePreferences
 import com.oss.euphoriae.data.preferences.AudioPreferences
 import com.oss.euphoriae.ui.components.MiniPlayer
-import com.oss.euphoriae.ui.screens.ContributorsScreen
 import com.oss.euphoriae.ui.screens.EqualizerScreen
 import com.oss.euphoriae.ui.screens.ExploreResultsScreen
 import com.oss.euphoriae.ui.screens.ExploreScreen
@@ -720,18 +719,12 @@ fun AppNavHost(
         composable("settings") {
             SettingsScreen(
                 onBackClick = { navController.popBackStack() },
-                onContributorsClick = { navController.navigate("contributors") },
                 currentThemeColor = currentThemeColor,
                 onThemeColorChange = onThemeColorChange,
                 currentDarkMode = currentDarkMode,
                 onDarkModeChange = onDarkModeChange,
                 currentOnlineTracksEnabled = uiState.isOnlineTracksEnabled,
                 onOnlineTracksEnabledChange = onOnlineTracksEnabledChange
-            )
-        }
-        composable("contributors") {
-            ContributorsScreen(
-                onBackClick = { navController.popBackStack() }
             )
         }
     }

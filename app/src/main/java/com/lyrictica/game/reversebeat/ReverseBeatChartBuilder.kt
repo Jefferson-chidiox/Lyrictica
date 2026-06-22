@@ -496,56 +496,195 @@ internal fun injectPowerUps(
 ): List<ReverseBeatChartEntry> {
     if (entries.size < 6) return reindexEntries(entries)
 
-    val powerKinds = listOf(
-        ReverseBeatTargetKind.POWER_DOUBLE_SCORE,
-        ReverseBeatTargetKind.POWER_LINE_CLEAR,
-        ReverseBeatTargetKind.POWER_LYRIC_BLOOM
+    val standardCount = entries.count { it.kind.isStandardBall }
+    if (standardCount < 6) return reindexEntries(entries)
+
+    val minSpacingBetweenPowerUps = if (mode == ReverseBeatChartMode.LYRIC) 1_450L else 1_300L
+    val targetPowerUpCount = (standardCount / if (mode == ReverseBeatChartMode.LYRIC) 5 else 6)
+        .coerceAtLeast(2)
+        .coerceAtMost(if (mode == ReverseBeatChartMode.LYRIC) 8 else 7)
+
+    val candidates = buildPowerUpCandidates(
+        entries = entries,
+        mode = mode,
+        songSeed = songSeed
     )
-    val cadence = if (mode == ReverseBeatChartMode.LYRIC) 4 else 4
-    val minGapForPowerUp = if (mode == ReverseBeatChartMode.LYRIC) 2_050L else 1_850L
-    val result = mutableListOf<ReverseBeatChartEntry>()
-    var normalsSinceLastPowerUp = 0
-    var powerUpIndex = 0
+    if (candidates.isEmpty()) return reindexEntries(entries)
 
-    entries.forEachIndexed { index, current ->
-        result += current
-        if (current.kind.isStandardBall) {
-            normalsSinceLastPowerUp += 1
-        }
+    val selected = selectPowerUpCandidates(
+        candidates = candidates,
+        targetCount = targetPowerUpCount,
+        minSpacingMs = minSpacingBetweenPowerUps
+    )
+    if (selected.isEmpty()) return reindexEntries(entries)
 
-        val next = entries.getOrNull(index + 1) ?: return@forEachIndexed
-        val gap = next.hitTimeMs - current.hitTimeMs
-        if (!current.kind.isStandardBall || !next.kind.isStandardBall) return@forEachIndexed
-        if (normalsSinceLastPowerUp < cadence) return@forEachIndexed
-        if (gap < minGapForPowerUp) return@forEachIndexed
-
-        val midpoint = current.hitTimeMs + (gap / 2L)
-        val offset = minOf(
-            ((gap / 2L) - 680L).coerceAtLeast(0L),
-            160L + ((abs(ReverseBeatSliceMath.wave(songSeed + 73, index, 0.66, 1.0)) * 140.0).toLong())
-        )
-        val pickupTime = midpoint + if ((songSeed + index) % 2 == 0) -offset else offset
-        val tooCloseToBomb = result.any { candidate ->
-            candidate.kind == ReverseBeatTargetKind.BOMB && abs(candidate.hitTimeMs - pickupTime) < 620L
-        }
-        if (tooCloseToBomb) return@forEachIndexed
-
-        val densityBoost = ReverseBeatSliceMath.spacingBoost(current.hitTimeMs, pickupTime)
-        val kind = powerKinds[powerUpIndex % powerKinds.size]
+    val result = entries.toMutableList()
+    selected.forEachIndexed { index, candidate ->
+        val densityBoost = ReverseBeatSliceMath.spacingBoost(candidate.previousBallHitTimeMs, candidate.hitTimeMs)
         result += buildChartEntry(
-            index = result.size,
-            hitTimeMs = pickupTime,
-            emphasis = 0.88f,
+            index = candidate.anchorIndex + index,
+            hitTimeMs = candidate.hitTimeMs,
+            emphasis = if (candidate.kind == ReverseBeatTargetKind.POWER_LINE_CLEAR) 0.94f else 0.88f,
             densityBoost = densityBoost,
             label = null,
-            songSeed = songSeed + 151 + powerUpIndex,
-            kind = kind
+            songSeed = songSeed + 151 + index,
+            kind = candidate.kind
         )
-        powerUpIndex += 1
-        normalsSinceLastPowerUp = 0
     }
 
     return reindexEntries(result.sortedBy { it.hitTimeMs })
+}
+
+private data class ReverseBeatPowerUpCandidate(
+    val anchorIndex: Int,
+    val previousBallHitTimeMs: Long,
+    val hitTimeMs: Long,
+    val kind: ReverseBeatTargetKind,
+    val score: Float,
+    val urgency: Int
+)
+
+private data class ReverseBeatPowerUpWindow(
+    val standardCount: Int,
+    val closeStandardCount: Int,
+    val bombCount: Int,
+    val tightGapCount: Int,
+    val score: Float
+)
+
+private fun buildPowerUpCandidates(
+    entries: List<ReverseBeatChartEntry>,
+    mode: ReverseBeatChartMode,
+    songSeed: Int
+): List<ReverseBeatPowerUpCandidate> {
+    val minGapBeforePickup = if (mode == ReverseBeatChartMode.LYRIC) 1_350L else 1_220L
+
+    return buildList {
+        entries.forEachIndexed { index, anchor ->
+            if (!anchor.kind.isStandardBall) return@forEachIndexed
+
+            val previousBall = entries.subList(0, index).lastOrNull { it.kind.isStandardBall } ?: return@forEachIndexed
+            val gapBefore = anchor.hitTimeMs - previousBall.hitTimeMs
+            if (gapBefore < minGapBeforePickup) return@forEachIndexed
+
+            val window = analyzePowerUpWindow(entries, anchorIndex = index, anchorTimeMs = anchor.hitTimeMs)
+            if (window.standardCount < 2 && window.bombCount == 0) return@forEachIndexed
+
+            val kind = when {
+                window.bombCount > 0 || window.closeStandardCount >= 3 || window.tightGapCount >= 2 -> {
+                    ReverseBeatTargetKind.POWER_LINE_CLEAR
+                }
+                mode == ReverseBeatChartMode.LYRIC && window.closeStandardCount >= 2 -> {
+                    ReverseBeatTargetKind.POWER_LYRIC_BLOOM
+                }
+                else -> ReverseBeatTargetKind.POWER_DOUBLE_SCORE
+            }
+
+            val minLeadMs = when (kind) {
+                ReverseBeatTargetKind.POWER_LINE_CLEAR -> 420L
+                ReverseBeatTargetKind.POWER_LYRIC_BLOOM -> 360L
+                ReverseBeatTargetKind.POWER_DOUBLE_SCORE -> 520L
+                else -> 420L
+            }
+            val idealLeadMs = when (kind) {
+                ReverseBeatTargetKind.POWER_LINE_CLEAR -> 520L
+                ReverseBeatTargetKind.POWER_LYRIC_BLOOM -> 430L
+                ReverseBeatTargetKind.POWER_DOUBLE_SCORE -> 620L
+                else -> 520L
+            }
+            val latestSafeLeadMs = minOf(gapBefore - 520L, 860L)
+            if (latestSafeLeadMs < minLeadMs) return@forEachIndexed
+
+            val leadMs = idealLeadMs.coerceIn(minLeadMs, latestSafeLeadMs)
+            val jitter = ((abs(ReverseBeatSliceMath.wave(songSeed + 73, index, 0.66, 1.0)) * 110.0).toLong()) - 55L
+            val rawPickupTime = anchor.hitTimeMs - leadMs + if ((songSeed + index) % 2 == 0) jitter else -jitter
+            val pickupTime = rawPickupTime.coerceIn(
+                minimumValue = previousBall.hitTimeMs + 520L,
+                maximumValue = anchor.hitTimeMs - 320L
+            )
+            val tooCloseToBomb = entries.any { candidate ->
+                candidate.kind == ReverseBeatTargetKind.BOMB && abs(candidate.hitTimeMs - pickupTime) < 360L
+            }
+            if (tooCloseToBomb) return@forEachIndexed
+
+            add(
+                ReverseBeatPowerUpCandidate(
+                    anchorIndex = index,
+                    previousBallHitTimeMs = previousBall.hitTimeMs,
+                    hitTimeMs = pickupTime,
+                    kind = kind,
+                    score = window.score + (gapBefore / 1000f * 0.22f),
+                    urgency = (window.bombCount * 3) + window.tightGapCount + window.closeStandardCount
+                )
+            )
+        }
+    }
+}
+
+private fun analyzePowerUpWindow(
+    entries: List<ReverseBeatChartEntry>,
+    anchorIndex: Int,
+    anchorTimeMs: Long
+): ReverseBeatPowerUpWindow {
+    val endTimeMs = anchorTimeMs + 3_000L
+    val standards = entries
+        .drop(anchorIndex)
+        .filter { it.kind.isStandardBall && it.hitTimeMs <= endTimeMs }
+    val closeStandardCount = standards.count { it.hitTimeMs <= anchorTimeMs + 1_200L }
+    val bombCount = entries.count { entry ->
+        entry.kind == ReverseBeatTargetKind.BOMB &&
+            entry.hitTimeMs in (anchorTimeMs + 140L)..(anchorTimeMs + 1_500L)
+    }
+    val tightGapCount = standards.zipWithNext().count { (first, second) ->
+        second.hitTimeMs - first.hitTimeMs <= 780L
+    }
+    val score =
+        (standards.size * 2.1f) +
+            (closeStandardCount * 1.45f) +
+            (bombCount * 3.8f) +
+            (tightGapCount * 1.2f)
+
+    return ReverseBeatPowerUpWindow(
+        standardCount = standards.size,
+        closeStandardCount = closeStandardCount,
+        bombCount = bombCount,
+        tightGapCount = tightGapCount,
+        score = score
+    )
+}
+
+private fun selectPowerUpCandidates(
+    candidates: List<ReverseBeatPowerUpCandidate>,
+    targetCount: Int,
+    minSpacingMs: Long
+): List<ReverseBeatPowerUpCandidate> {
+    val selected = mutableListOf<ReverseBeatPowerUpCandidate>()
+
+    candidates
+        .sortedWith(compareByDescending<ReverseBeatPowerUpCandidate> { it.urgency }.thenByDescending { it.score }.thenBy { it.hitTimeMs })
+        .forEach { candidate ->
+            if (selected.size >= targetCount) return@forEach
+            val overlaps = selected.any { chosen ->
+                abs(chosen.hitTimeMs - candidate.hitTimeMs) < minSpacingMs || abs(chosen.anchorIndex - candidate.anchorIndex) < 2
+            }
+            if (!overlaps) {
+                selected += candidate
+            }
+        }
+
+    if (selected.size < targetCount) {
+        candidates.sortedBy { it.hitTimeMs }.forEach { candidate ->
+            if (selected.size >= targetCount) return@forEach
+            val overlaps = selected.any { chosen ->
+                abs(chosen.hitTimeMs - candidate.hitTimeMs) < minSpacingMs
+            }
+            if (!overlaps) {
+                selected += candidate
+            }
+        }
+    }
+
+    return selected.sortedBy { it.hitTimeMs }
 }
 
 private fun supplementBeatChartCandidates(

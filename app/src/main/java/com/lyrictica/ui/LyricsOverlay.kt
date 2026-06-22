@@ -223,6 +223,17 @@ fun LyricsOverlay(
                                     .then(clickModifier)
                             )
                         }
+                        item {
+                            Text(
+                                text = "lyrics by musixmatch",
+                                color = inactiveColor.copy(alpha = 0.5f),
+                                fontSize = 14.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 16.dp),
+                                textAlign = TextAlign.Start
+                            )
+                        }
                     }
 
                     // FOLLOW affordance.

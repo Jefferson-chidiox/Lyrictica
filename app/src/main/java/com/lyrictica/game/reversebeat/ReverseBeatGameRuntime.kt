@@ -50,7 +50,9 @@ internal data class ReverseBeatUiState(
     val airDanceSummaryAlpha: Float = 0f,
     val specialCalloutText: String? = null,
     val specialCalloutTone: ReverseBeatCalloutTone = ReverseBeatCalloutTone.INFO,
-    val specialCalloutAlpha: Float = 0f
+    val specialCalloutAlpha: Float = 0f,
+    val bombRevealCueCount: Int = 0,
+    val bombHitCueCount: Int = 0
 )
 
 internal data class ReverseBeatTargetRender(
@@ -565,9 +567,21 @@ internal class ReverseBeatGameRuntime(
     }
 
     private fun spawnReadyTargets(positionMs: Long, chart: ReverseBeatChart) {
+        var revealedBombs = 0
         while (pendingIndex < chart.entries.size && chart.entries[pendingIndex].spawnTimeMs <= positionMs) {
-            activeTargets += ActiveTarget(chart.entries[pendingIndex])
+            val entry = chart.entries[pendingIndex]
+            activeTargets += ActiveTarget(entry)
+            if (entry.kind == ReverseBeatTargetKind.BOMB) {
+                revealedBombs += 1
+            }
             pendingIndex += 1
+        }
+        if (revealedBombs > 0) {
+            ui.value = syncSpecialUi(
+                ui.value.copy(
+                    bombRevealCueCount = ui.value.bombRevealCueCount + revealedBombs
+                )
+            )
         }
     }
 
@@ -711,6 +725,7 @@ internal class ReverseBeatGameRuntime(
                     misses = resolution.misses,
                     clearedTargets = resolution.clearedTargets,
                     progress = progress(loadedChart, resolution.catches),
+                    bombHitCueCount = ui.value.bombHitCueCount + if (resolution.triggeredBomb) 1 else 0,
                     message = when {
                         resolution.triggeredBomb -> "Bomb hit — keep the blade off hazards."
                         resolution.triggeredLineClear -> "Line Clear — the lane just exploded open."

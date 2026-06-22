@@ -68,11 +68,11 @@ class ThemePreferences(context: Context) {
     }
     
     fun getCurrentDarkMode(): DarkModeOption {
-        val modeName = prefs.getString(KEY_DARK_MODE, DarkModeOption.SYSTEM.name)
+        val modeName = prefs.getString(KEY_DARK_MODE, DarkModeOption.DARK.name)
         return try {
-            DarkModeOption.valueOf(modeName ?: DarkModeOption.SYSTEM.name)
+            DarkModeOption.valueOf(modeName ?: DarkModeOption.DARK.name)
         } catch (e: IllegalArgumentException) {
-            DarkModeOption.SYSTEM
+            DarkModeOption.DARK
         }
     }
     

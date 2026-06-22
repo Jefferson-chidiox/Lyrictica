@@ -208,7 +208,7 @@ class ReverseBeatChartBuilderTest {
         val bombs = chart.entries.filter { it.kind == ReverseBeatTargetKind.BOMB }
 
         assertTrue(bombs.isNotEmpty())
-        assertEquals(chart.playableTargetCount + chart.bombCount, chart.entryCount)
+        assertEquals(chart.playableTargetCount + chart.bombCount + chart.powerUpCount, chart.entryCount)
         assertTrue(bombs.all { bomb ->
             val previousBall = chart.entries.lastOrNull { it.kind == ReverseBeatTargetKind.BALL && it.hitTimeMs < bomb.hitTimeMs }
             val nextBall = chart.entries.firstOrNull { it.kind == ReverseBeatTargetKind.BALL && it.hitTimeMs > bomb.hitTimeMs }
@@ -219,7 +219,7 @@ class ReverseBeatChartBuilderTest {
     }
 
     @Test
-    fun `power up pickups are injected with distinct symbols`() {
+    fun `power up pickups are injected with safe spacing for lyric charts`() {
         val baseEntries = (0 until 15).map { index ->
             ReverseBeatChartEntry(
                 id = index.toLong() + 1L,
@@ -237,12 +237,42 @@ class ReverseBeatChartBuilderTest {
         }
 
         val entries = injectPowerUps(baseEntries, ReverseBeatChartMode.LYRIC, songSeed = 12)
-        val kinds = entries.map { it.kind }.toSet()
+        val powerUps = entries.filter { it.kind.isPowerUp }
 
-        assertTrue(kinds.contains(ReverseBeatTargetKind.POWER_DOUBLE_SCORE))
-        assertTrue(kinds.contains(ReverseBeatTargetKind.POWER_LINE_CLEAR))
-        assertTrue(kinds.contains(ReverseBeatTargetKind.POWER_LYRIC_BLOOM))
-        assertTrue(entries.filter { it.kind.isPowerUp }.zipWithNext().all { (first, second) -> second.hitTimeMs - first.hitTimeMs >= 1_500L })
+        assertTrue(powerUps.size >= 3)
+        assertTrue(powerUps.zipWithNext().all { (first, second) -> second.hitTimeMs - first.hitTimeMs >= 1_300L })
+        assertTrue(powerUps.all { pickup ->
+            val previousBall = entries.lastOrNull { it.kind == ReverseBeatTargetKind.BALL && it.hitTimeMs < pickup.hitTimeMs }
+            val nextBall = entries.firstOrNull { it.kind == ReverseBeatTargetKind.BALL && it.hitTimeMs > pickup.hitTimeMs }
+            previousBall != null && nextBall != null &&
+                pickup.hitTimeMs - previousBall.hitTimeMs >= 520L &&
+                nextBall.hitTimeMs - pickup.hitTimeMs >= 320L
+        })
+    }
+
+    @Test
+    fun `beat charts skip lyric bloom pickups`() {
+        val baseEntries = (0 until 15).map { index ->
+            ReverseBeatChartEntry(
+                id = index.toLong() + 1L,
+                kind = ReverseBeatTargetKind.BALL,
+                hitTimeMs = 1_200L + (index * 2_100L),
+                flightDurationMs = 2_000L,
+                startXFraction = 0.14f,
+                apexXFraction = if (index % 2 == 0) 0.24f else 0.76f,
+                endXFraction = if (index % 2 == 0) 0.38f else 0.62f,
+                apexYFraction = 0.33f,
+                radiusPx = 78f,
+                emphasis = 0.68f,
+                label = null
+            )
+        }
+
+        val entries = injectPowerUps(baseEntries, ReverseBeatChartMode.BEAT, songSeed = 21)
+        val powerKinds = entries.filter { it.kind.isPowerUp }.map { it.kind }.toSet()
+
+        assertTrue(powerKinds.isNotEmpty())
+        assertTrue(ReverseBeatTargetKind.POWER_LYRIC_BLOOM !in powerKinds)
     }
 
     @Test

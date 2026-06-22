@@ -5,9 +5,11 @@ import com.lyrictica.lyrics.MusixmatchClient
 import com.oss.euphoriae.data.repository.AudiusRepository
 import com.oss.euphoriae.data.repository.MusicRepository
 import com.oss.euphoriae.data.repository.NcsRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 
 private const val MUSIXMATCH_LIMIT = 8
 private const val ONLINE_LIMIT = 8
@@ -24,85 +26,87 @@ internal class HomeSearchRepository(
     suspend fun search(
         query: String,
         includeOnlineProviders: Boolean = true
-    ): HomeSearchResults = coroutineScope {
-        val trimmedQuery = query.trim()
-        if (trimmedQuery.isBlank()) return@coroutineScope HomeSearchResults()
-        val musixmatchQuery = LyricsQueryNormalizer.searchTitle(trimmedQuery)
+    ): HomeSearchResults = withContext(Dispatchers.IO) {
+        coroutineScope {
+            val trimmedQuery = query.trim()
+            if (trimmedQuery.isBlank()) return@coroutineScope HomeSearchResults()
+            val musixmatchQuery = LyricsQueryNormalizer.searchTitle(trimmedQuery)
 
-        val localSongsDeferred = async {
-            runCatching { musicRepository.getAllSongs().first() }.getOrDefault(emptyList())
-        }
-        val audiusDeferred = async {
-            if (includeOnlineProviders) {
-                runCatching { audiusRepository.searchTracks(trimmedQuery, limit = ONLINE_MATCH_POOL) }
-                    .getOrDefault(emptyList())
-            } else {
-                emptyList()
+            val localSongsDeferred = async {
+                runCatching { musicRepository.getAllSongs().first() }.getOrDefault(emptyList())
             }
-        }
-        val ncsDeferred = async {
-            if (includeOnlineProviders) {
-                runCatching { ncsRepository.searchTracks(trimmedQuery, limit = ONLINE_MATCH_POOL) }
-                    .getOrDefault(emptyList())
-            } else {
-                emptyList()
+            val audiusDeferred = async {
+                if (includeOnlineProviders) {
+                    runCatching { audiusRepository.searchTracks(trimmedQuery, limit = ONLINE_MATCH_POOL) }
+                        .getOrDefault(emptyList())
+                } else {
+                    emptyList()
+                }
             }
-        }
-        val musixmatchDeferred = async {
-            coroutineScope {
-                val trackMatchesDeferred = async {
-                    runCatching { musixmatchClient.search(trackName = musixmatchQuery) }
+            val ncsDeferred = async {
+                if (includeOnlineProviders) {
+                    runCatching { ncsRepository.searchTracks(trimmedQuery, limit = ONLINE_MATCH_POOL) }
                         .getOrDefault(emptyList())
+                } else {
+                    emptyList()
                 }
-                val artistMatchesDeferred = async {
-                    runCatching { musixmatchClient.search(artistName = trimmedQuery) }
-                        .getOrDefault(emptyList())
-                }
-
-                (trackMatchesDeferred.await() + artistMatchesDeferred.await())
-                    .distinctBy { record ->
-                        record.trackId.takeIf { it > 0L }?.toString()
-                            ?: "${normalizeSearchText(record.trackName)}|${normalizeSearchText(record.artistName)}|${normalizeSearchText(record.albumName)}"
+            }
+            val musixmatchDeferred = async {
+                coroutineScope {
+                    val trackMatchesDeferred = async {
+                        runCatching { musixmatchClient.search(trackName = musixmatchQuery) }
+                            .getOrDefault(emptyList())
                     }
+                    val artistMatchesDeferred = async {
+                        runCatching { musixmatchClient.search(artistName = trimmedQuery) }
+                            .getOrDefault(emptyList())
+                    }
+
+                    (trackMatchesDeferred.await() + artistMatchesDeferred.await())
+                        .distinctBy { record ->
+                            record.trackId.takeIf { it > 0L }?.toString()
+                                ?: "${normalizeSearchText(record.trackName)}|${normalizeSearchText(record.artistName)}|${normalizeSearchText(record.albumName)}"
+                        }
+                }
             }
-        }
 
-        val localCatalog = localSongsDeferred.await()
-        val rankedAudius = if (includeOnlineProviders) {
-            HomeSearchOrganizer.rankOnlineTracks(
-                query = trimmedQuery,
-                tracks = audiusDeferred.await(),
-                limit = ONLINE_MATCH_POOL
-            )
-        } else {
-            emptyList()
-        }
-        val rankedNcs = if (includeOnlineProviders) {
-            HomeSearchOrganizer.rankOnlineTracks(
-                query = trimmedQuery,
-                tracks = ncsDeferred.await(),
-                limit = ONLINE_MATCH_POOL
-            )
-        } else {
-            emptyList()
-        }
+            val localCatalog = localSongsDeferred.await()
+            val rankedAudius = if (includeOnlineProviders) {
+                HomeSearchOrganizer.rankOnlineTracks(
+                    query = trimmedQuery,
+                    tracks = audiusDeferred.await(),
+                    limit = ONLINE_MATCH_POOL
+                )
+            } else {
+                emptyList()
+            }
+            val rankedNcs = if (includeOnlineProviders) {
+                HomeSearchOrganizer.rankOnlineTracks(
+                    query = trimmedQuery,
+                    tracks = ncsDeferred.await(),
+                    limit = ONLINE_MATCH_POOL
+                )
+            } else {
+                emptyList()
+            }
 
-        HomeSearchResults(
-            musixmatch = HomeSearchOrganizer.buildMusixmatchResults(
-                query = trimmedQuery,
-                rawResults = musixmatchDeferred.await(),
-                localSongs = localCatalog,
-                audiusTracks = rankedAudius,
-                ncsTracks = rankedNcs,
-                limit = MUSIXMATCH_LIMIT
-            ),
-            audius = rankedAudius.take(ONLINE_LIMIT),
-            ncs = rankedNcs.take(ONLINE_LIMIT),
-            localSongs = HomeSearchOrganizer.rankLocalSongs(
-                query = trimmedQuery,
-                songs = localCatalog,
-                limit = LOCAL_LIMIT
+            HomeSearchResults(
+                musixmatch = HomeSearchOrganizer.buildMusixmatchResults(
+                    query = trimmedQuery,
+                    rawResults = musixmatchDeferred.await(),
+                    localSongs = localCatalog,
+                    audiusTracks = rankedAudius,
+                    ncsTracks = rankedNcs,
+                    limit = MUSIXMATCH_LIMIT
+                ),
+                audius = rankedAudius.take(ONLINE_LIMIT),
+                ncs = rankedNcs.take(ONLINE_LIMIT),
+                localSongs = HomeSearchOrganizer.rankLocalSongs(
+                    query = trimmedQuery,
+                    songs = localCatalog,
+                    limit = LOCAL_LIMIT
+                )
             )
-        )
+        }
     }
 }

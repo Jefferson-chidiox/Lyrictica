@@ -151,13 +151,46 @@ internal class MusixmatchClient(
             }
         }
 
+        val description = getWikipediaSummary(name.takeIf { it.isNotBlank() } ?: normalizedArtist)
+
         return MusixmatchArtistMetadata(
             name = name.takeIf { it.isNotBlank() } ?: normalizedArtist,
             country = country,
             twitterUrl = twitterUrl,
             rating = rating,
-            imageUrl = coverUrl
+            imageUrl = coverUrl,
+            description = description
         )
+    }
+
+    private fun getWikipediaSummary(artistName: String): String? {
+        val encodedName = URLEncoder.encode(artistName, "UTF-8")
+        val urlStr = "https://en.wikipedia.org/w/api.php?action=query&prop=extracts&exsentences=4&explaintext=1&titles=$encodedName&redirects=1&format=json"
+        try {
+            val url = URL(urlStr)
+            val conn = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 10_000
+                readTimeout = 10_000
+                setRequestProperty("User-Agent", userAgent)
+            }
+            val code = conn.responseCode
+            if (code in 200..299) {
+                val body = conn.inputStream.use { BufferedReader(InputStreamReader(it)).readText() }
+                val root = JSONObject(body)
+                val pages = root.optJSONObject("query")?.optJSONObject("pages")
+                if (pages != null) {
+                    val keys = pages.keys()
+                    if (keys.hasNext()) {
+                        val page = pages.optJSONObject(keys.next())
+                        return page?.optString("extract")?.takeIf { it.isNotBlank() }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to fetch Wikipedia summary", e)
+        }
+        return null
     }
 
     private fun getSubtitle(track: MusixmatchTrackRecord): MusixmatchLyrics? {
@@ -229,9 +262,7 @@ internal class MusixmatchClient(
             )
         ) ?: return null
 
-        val subtitle = body.optJSONObject("subtitle_translation") ?: body.optJSONObject("subtitle") ?: return null
-        val subtitleBody = subtitle.optString("subtitle_body")
-        if (subtitleBody.isBlank()) return null
+        val subtitleBody = extractSubtitleTranslationBody(body) ?: return null
         val parsed = MusixmatchLyricsParsers.parseSubtitleBody(subtitleBody) ?: return null
         return parsed.toCacheLyrics(
             trackId = trackId,
@@ -252,9 +283,7 @@ internal class MusixmatchClient(
             )
         ) ?: return null
 
-        val lyrics = body.optJSONObject("lyrics_translation") ?: body.optJSONObject("lyrics") ?: return null
-        val lyricsBody = lyrics.optString("lyrics_body")
-        if (lyricsBody.isBlank()) return null
+        val lyricsBody = extractLyricsTranslationBody(body) ?: return null
         val parsed = MusixmatchLyricsParsers.parseLyricsBody(lyricsBody) ?: return null
         return parsed.toCacheLyrics(
             trackId = trackId,
@@ -378,6 +407,27 @@ internal class MusixmatchClient(
     }
 
     private fun parseSearchRecord(obj: JSONObject): MusixmatchTrackRecord {
+        val genres = mutableListOf<String>()
+        val primaryGenres = obj.optJSONObject("primary_genres")
+        if (primaryGenres != null) {
+            val musicGenreList = primaryGenres.optJSONArray("music_genre_list")
+            if (musicGenreList != null) {
+                for (i in 0 until musicGenreList.length()) {
+                    val genreObj = musicGenreList.optJSONObject(i)
+                        ?.optJSONObject("music_genre")
+                    genreObj?.optString("music_genre_name")
+                        ?.takeIf { it.isNotBlank() }
+                        ?.let { genres.add(it) }
+                }
+            }
+        }
+
+        val coverUrl = obj.optString("album_coverart_800x800")
+            ?.takeIf { it.isNotBlank() }
+            ?: obj.optString("album_coverart_500x500")?.takeIf { it.isNotBlank() }
+            ?: obj.optString("album_coverart_350x350")?.takeIf { it.isNotBlank() }
+            ?: obj.optString("album_coverart_100x100")?.takeIf { it.isNotBlank() }
+
         return MusixmatchTrackRecord(
             trackId = obj.optLong("track_id"),
             trackName = obj.optString("track_name"),
@@ -388,7 +438,12 @@ internal class MusixmatchClient(
             hasLyrics = flag(obj, "has_lyrics"),
             hasSubtitles = flag(obj, "has_subtitles"),
             hasRichsync = flag(obj, "has_richsync"),
-            trackRating = obj.optInt("track_rating")
+            trackRating = obj.optInt("track_rating"),
+            numFavourite = obj.optInt("num_favourite", 0),
+            updatedTime = obj.optString("updated_time", ""),
+            genres = genres,
+            explicit = flag(obj, "explicit"),
+            albumCoverUrl = coverUrl
         )
     }
 
@@ -399,4 +454,34 @@ internal class MusixmatchClient(
             else -> obj.optBoolean(key, false)
         }
     }
+}
+
+internal fun extractSubtitleTranslationBody(body: JSONObject): String? {
+    body.optJSONObject("subtitle_translation")
+        ?.optString("subtitle_body")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
+    val subtitle = body.optJSONObject("subtitle") ?: return null
+    subtitle.optJSONObject("subtitle_translated")
+        ?.optString("subtitle_body")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
+    return null
+}
+
+internal fun extractLyricsTranslationBody(body: JSONObject): String? {
+    body.optJSONObject("lyrics_translation")
+        ?.optString("lyrics_body")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
+    val lyrics = body.optJSONObject("lyrics") ?: return null
+    lyrics.optJSONObject("lyrics_translated")
+        ?.optString("lyrics_body")
+        ?.takeIf { it.isNotBlank() }
+        ?.let { return it }
+
+    return null
 }

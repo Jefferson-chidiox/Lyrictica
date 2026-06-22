@@ -95,6 +95,28 @@ class ReverseBeatGameRuntimeTest {
         assertTrue(finalState.airDanceSummaryAlpha > 0f)
     }
 
+    @Test
+    fun `bomb reveal and bomb hit cues increment`() {
+        val runtime = ReverseBeatGameRuntime(songSeed = 11, performanceProfile = ReverseBeatPerformanceProfile.STANDARD)
+        runtime.loadChart(
+            ReverseBeatChart(
+                mode = ReverseBeatChartMode.BEAT,
+                entries = listOf(
+                    testEntry(id = 1L, kind = ReverseBeatTargetKind.BOMB, hitTimeMs = 1_600L, apexX = 0.50f)
+                ),
+                durationMs = 4_000L,
+                summary = "test"
+            )
+        )
+        runtime.startRun()
+
+        runtime.onPlaybackSample(positionMs = 600L, isPlaying = true, features = AudioFeatures(), ended = false)
+        assertEquals(1, runtime.uiState.value.bombRevealCueCount)
+
+        hitFirstTargetOfKind(runtime, timeMs = 1_600L, kind = ReverseBeatTargetKind.BOMB)
+        assertEquals(1, runtime.uiState.value.bombHitCueCount)
+    }
+
     private fun hitFirstTargetOfKind(
         runtime: ReverseBeatGameRuntime,
         timeMs: Long,

@@ -1,5 +1,10 @@
 package com.lyrictica.ui
 
+import android.content.Context
+import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -34,6 +39,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SkipNext
 import androidx.compose.material.icons.filled.TrackChanges
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
@@ -63,12 +69,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -104,7 +113,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.PI
 import kotlin.math.roundToInt
+import kotlin.math.sin
 
 private enum class ReverseBeatChartPhase {
     IDLE,
@@ -119,10 +130,22 @@ private data class ReverseBeatChartUiState(
     val message: String
 )
 
+private data class ReverseBeatConfettiParticle(
+    val velocityX: Float,
+    val velocityY: Float,
+    val delay: Float,
+    val width: Float,
+    val height: Float,
+    val rotation: Float,
+    val spin: Float,
+    val color: Color
+)
+
 @Composable
 internal fun ReverseBeatGameSurface(
     theme: VisualizerPalette,
     songLoaded: Boolean,
+    songInstanceKey: String,
     songSeed: Int,
     trackTitle: String,
     artistText: String?,
@@ -138,6 +161,10 @@ internal fun ReverseBeatGameSurface(
     onResumeRun: () -> Unit,
     onRestartRun: () -> Unit,
     onRunFinished: (Int) -> Unit,
+    canAdvanceToNextSong: Boolean,
+    nextSongTitle: String? = null,
+    nextSongArtist: String? = null,
+    onPlayNextSong: () -> Unit,
     onExitGameMode: () -> Unit,
     onOpenGamesMenu: () -> Unit,
     modifier: Modifier = Modifier
@@ -146,7 +173,7 @@ internal fun ReverseBeatGameSurface(
     val performanceProfile = remember(context) {
         resolveReverseBeatPerformanceProfile(context.applicationContext)
     }
-    val runtime = remember(songSeed, performanceProfile) {
+    val runtime = remember(songInstanceKey, songSeed, performanceProfile) {
         ReverseBeatGameRuntime(songSeed, performanceProfile)
     }
     val uiState by runtime.uiState.collectAsState()
@@ -159,7 +186,9 @@ internal fun ReverseBeatGameSurface(
     val playbackIsPlayingState by rememberUpdatedState(playbackIsPlaying)
     val scope = rememberCoroutineScope()
     val chartBuilder = remember(context) { ReverseBeatChartBuilder(context.applicationContext) }
-    var chartState by remember(songSeed) {
+    val reverseBeatHaptics = remember(context) { ReverseBeatHaptics(context.applicationContext) }
+    var pendingAutoStartFromSongKey by remember { mutableStateOf<String?>(null) }
+    var chartState by remember(songInstanceKey) {
         mutableStateOf(
             ReverseBeatChartUiState(
                 phase = ReverseBeatChartPhase.IDLE,
@@ -173,7 +202,7 @@ internal fun ReverseBeatGameSurface(
         }
     }
 
-    LaunchedEffect(songLoaded, songSource, availableLyrics, lyricsLoading, songSeed) {
+    LaunchedEffect(songLoaded, songSource, availableLyrics, lyricsLoading, songInstanceKey, songSeed) {
         when {
             !songLoaded -> {
                 chartState = ReverseBeatChartUiState(
@@ -241,6 +270,27 @@ internal fun ReverseBeatGameSurface(
                 onPauseRun()
             }
         }
+    }
+
+    LaunchedEffect(uiState.bombRevealCueCount) {
+        if (uiState.bombRevealCueCount > 0) {
+            reverseBeatHaptics.vibrateBombReveal()
+        }
+    }
+
+    LaunchedEffect(uiState.bombHitCueCount) {
+        if (uiState.bombHitCueCount > 0) {
+            reverseBeatHaptics.vibrateBombHit()
+        }
+    }
+
+    LaunchedEffect(pendingAutoStartFromSongKey, songInstanceKey, chartState.phase, uiState.chartReady) {
+        val requestedFromSongKey = pendingAutoStartFromSongKey ?: return@LaunchedEffect
+        if (requestedFromSongKey == songInstanceKey) return@LaunchedEffect
+        if (chartState.phase != ReverseBeatChartPhase.READY || !uiState.chartReady) return@LaunchedEffect
+        pendingAutoStartFromSongKey = null
+        runtime.startRun()
+        onStartRun()
     }
 
     Box(
@@ -311,10 +361,9 @@ internal fun ReverseBeatGameSurface(
             }
         }
 
-        if (uiState.phase == ReverseBeatPhase.PAUSED || uiState.phase == ReverseBeatPhase.FINISHED) {
+        if (uiState.phase == ReverseBeatPhase.PAUSED) {
             ReverseBeatPauseCard(
                 theme = theme,
-                phase = uiState.phase,
                 trackTitle = trackTitle,
                 artistText = artistText,
                 chartMode = uiState.chartMode,
@@ -324,14 +373,42 @@ internal fun ReverseBeatGameSurface(
                 misses = uiState.misses,
                 progress = uiState.progress,
                 onResume = {
-                    if (uiState.phase == ReverseBeatPhase.PAUSED) {
-                        runtime.resumeRun()
-                        onResumeRun()
-                    }
+                    runtime.resumeRun()
+                    onResumeRun()
                 },
                 onRestart = {
                     runtime.startRun()
                     onRestartRun()
+                },
+                onMainMenu = {
+                    runtime.abandonRun()
+                    onOpenGamesMenu()
+                },
+                modifier = Modifier.align(Alignment.Center)
+            )
+        }
+
+        if (uiState.phase == ReverseBeatPhase.FINISHED) {
+            ReverseBeatCompletionCard(
+                theme = theme,
+                trackTitle = trackTitle,
+                artistText = artistText,
+                chartMode = uiState.chartMode,
+                score = uiState.score,
+                bestCombo = uiState.bestCombo,
+                catches = uiState.catches,
+                misses = uiState.misses,
+                progress = uiState.progress,
+                onRestart = {
+                    runtime.startRun()
+                    onRestartRun()
+                },
+                canAdvanceToNextSong = canAdvanceToNextSong,
+                nextSongTitle = nextSongTitle,
+                nextSongArtist = nextSongArtist,
+                onPlayNextSong = {
+                    pendingAutoStartFromSongKey = songInstanceKey
+                    onPlayNextSong()
                 },
                 onMainMenu = {
                     runtime.abandonRun()
@@ -934,7 +1011,6 @@ private fun ReverseBeatCenterCard(
 @Composable
 private fun ReverseBeatPauseCard(
     theme: VisualizerPalette,
-    phase: ReverseBeatPhase,
     trackTitle: String,
     artistText: String?,
     chartMode: ReverseBeatChartMode?,
@@ -1003,7 +1079,7 @@ private fun ReverseBeatPauseCard(
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
                 Text(
-                    text = if (phase == ReverseBeatPhase.FINISHED) "Run summary" else "Paused run",
+                    text = "Paused run",
                     color = theme.controlText,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.SemiBold
@@ -1019,7 +1095,7 @@ private fun ReverseBeatPauseCard(
                 )
                 Text(
                     text = artistText?.takeIf { it.isNotBlank() }
-                        ?: if (phase == ReverseBeatPhase.FINISHED) "Run complete" else "Take a breath and jump back in.",
+                        ?: "Take a breath and jump back in.",
                     color = theme.mutedText,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
@@ -1115,40 +1191,25 @@ private fun ReverseBeatPauseCard(
                 )
             }
 
-            if (phase == ReverseBeatPhase.PAUSED) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                FilledTonalButton(
+                    onClick = onResume,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.filledTonalButtonColors(
+                        containerColor = Color.White.copy(alpha = 0.10f),
+                        contentColor = theme.controlText
+                    )
                 ) {
-                    FilledTonalButton(
-                        onClick = onResume,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = Color.White.copy(alpha = 0.10f),
-                            contentColor = theme.controlText
-                        )
-                    ) {
-                        Icon(Icons.Default.PlayArrow, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Resume")
-                    }
-                    FilledTonalButton(
-                        onClick = onRestart,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.filledTonalButtonColors(
-                            containerColor = theme.ambientGlow.copy(alpha = 0.24f),
-                            contentColor = theme.controlText
-                        )
-                    ) {
-                        Icon(Icons.Default.Refresh, contentDescription = null)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Restart")
-                    }
+                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Resume")
                 }
-            } else {
                 FilledTonalButton(
                     onClick = onRestart,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.weight(1f),
                     colors = ButtonDefaults.filledTonalButtonColors(
                         containerColor = theme.ambientGlow.copy(alpha = 0.24f),
                         contentColor = theme.controlText
@@ -1156,7 +1217,7 @@ private fun ReverseBeatPauseCard(
                 ) {
                     Icon(Icons.Default.Refresh, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Replay")
+                    Text("Restart")
                 }
             }
 
@@ -1166,6 +1227,387 @@ private fun ReverseBeatPauseCard(
             ) {
                 Text("Main menu")
             }
+        }
+    }
+}
+
+@Composable
+private fun ReverseBeatCompletionCard(
+    theme: VisualizerPalette,
+    trackTitle: String,
+    artistText: String?,
+    chartMode: ReverseBeatChartMode?,
+    score: Int,
+    bestCombo: Int,
+    catches: Int,
+    misses: Int,
+    progress: Float,
+    onRestart: () -> Unit,
+    canAdvanceToNextSong: Boolean,
+    nextSongTitle: String?,
+    nextSongArtist: String?,
+    onPlayNextSong: () -> Unit,
+    onMainMenu: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val cardShape = RoundedCornerShape(30.dp)
+    val accent = when (chartMode) {
+        ReverseBeatChartMode.LYRIC -> theme.lyricsActive
+        ReverseBeatChartMode.BEAT -> theme.ambientGlow
+        null -> theme.controlText
+    }
+    val progressValue = progress.coerceIn(0f, 1f)
+    val progressPercent = (progressValue * 100f).roundToInt()
+    val chartLabel = when (chartMode) {
+        ReverseBeatChartMode.LYRIC -> "Lyric chart"
+        ReverseBeatChartMode.BEAT -> "Beat chart"
+        null -> "Chart loading"
+    }
+
+    Box(
+        modifier = modifier
+            .padding(horizontal = 22.dp)
+            .shadow(
+                elevation = 30.dp,
+                shape = cardShape,
+                ambientColor = theme.ambientGlow.copy(alpha = 0.38f),
+                spotColor = theme.ambientGlow.copy(alpha = 0.30f)
+            )
+            .clip(cardShape)
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFF0F172A).copy(alpha = 0.85f),
+                        Color(0xFF020617).copy(alpha = 0.95f)
+                    )
+                )
+            )
+            .border(
+                width = 1.dp,
+                brush = Brush.linearGradient(
+                    colors = listOf(Color.White.copy(alpha = 0.20f), Color.White.copy(alpha = 0.05f))
+                ),
+                shape = cardShape
+            )
+    ) {
+        ReverseBeatConfettiOverlay(
+            accent = accent,
+            theme = theme,
+            modifier = Modifier.matchParentSize()
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 22.dp, vertical = 24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .background(Color(0xFFFBBF24).copy(alpha = 0.16f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.TrackChanges,
+                        contentDescription = null,
+                        tint = Color(0xFFFBBF24),
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+                Text(
+                    text = "RUN COMPLETE",
+                    color = Color.White,
+                    fontSize = 20.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 1.4.sp
+                )
+                Text(
+                    text = trackTitle,
+                    color = theme.mutedText,
+                    fontSize = 12.sp,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                Text(
+                    text = "Final Score",
+                    color = theme.mutedText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
+                )
+                Text(
+                    text = score.toString(),
+                    color = Color(0xFFFBBF24),
+                    fontSize = 48.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Text(
+                    text = "$progressPercent% Cleared ($chartLabel)",
+                    color = accent,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.08f))
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                ReverseBeatSummaryMetric(
+                    label = "BEST COMBO",
+                    value = bestCombo.toString(),
+                    accent = theme.controlText,
+                    modifier = Modifier.weight(1f)
+                )
+                ReverseBeatSummaryMetric(
+                    label = "SLICED",
+                    value = catches.toString(),
+                    accent = accent,
+                    modifier = Modifier.weight(1f)
+                )
+                ReverseBeatSummaryMetric(
+                    label = "MISSES",
+                    value = misses.toString(),
+                    accent = if (misses > 0) Color(0xFFFF8A80) else Color(0xFF34D399),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+
+            if (canAdvanceToNextSong && nextSongTitle != null) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color.White.copy(alpha = 0.05f))
+                        .border(
+                            width = 1.dp,
+                            color = Color.White.copy(alpha = 0.08f),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                          text = "UP NEXT",
+                          color = Color(0xFF67E8F9),
+                          fontSize = 10.sp,
+                          fontWeight = FontWeight.ExtraBold,
+                          letterSpacing = 1.2.sp
+                        )
+                        Text(
+                            text = nextSongTitle,
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = nextSongArtist ?: "Unknown Artist",
+                            color = theme.mutedText,
+                            fontSize = 12.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+            }
+
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                if (canAdvanceToNextSong && nextSongTitle != null) {
+                    FilledTonalButton(
+                        onClick = onPlayNextSong,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color(0xFF67E8F9).copy(alpha = 0.22f),
+                            contentColor = Color.White
+                        )
+                    ) {
+                        Icon(Icons.Default.SkipNext, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Play next song", fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    FilledTonalButton(
+                        onClick = onRestart,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.08f),
+                            contentColor = theme.controlText
+                        )
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Replay")
+                    }
+
+                    FilledTonalButton(
+                        onClick = onMainMenu,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.filledTonalButtonColors(
+                            containerColor = Color.White.copy(alpha = 0.08f),
+                            contentColor = theme.controlText
+                        )
+                    ) {
+                        Icon(Icons.Default.Close, contentDescription = null)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Main menu")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReverseBeatConfettiOverlay(
+    accent: Color,
+    theme: VisualizerPalette,
+    modifier: Modifier = Modifier
+) {
+    val palette = remember(accent, theme.ambientGlow, theme.lyricsActive, theme.controlText) {
+        listOf(
+            accent,
+            theme.ambientGlow,
+            theme.lyricsActive,
+            Color(0xFFFDE68A),
+            Color.White,
+            theme.controlText
+        )
+    }
+    val particles = remember(palette) {
+        List(26) { index ->
+            val spread = (index / 25f) - 0.5f
+            ReverseBeatConfettiParticle(
+                velocityX = (spread * 1.22f) + if (index % 2 == 0) -0.07f else 0.07f,
+                velocityY = -0.34f - ((index * 3) % 5) * 0.05f,
+                delay = ((index * 11) % 7) * 0.028f,
+                width = 10f + (index % 4) * 3.2f,
+                height = 5f + (index % 3) * 2.1f,
+                rotation = ((index * 29) % 360).toFloat(),
+                spin = if (index % 2 == 0) 260f else -260f,
+                color = palette[index % palette.size]
+            )
+        }
+    }
+    val confettiTransition = rememberInfiniteTransition(label = "reverseBeatConfetti")
+    val cycleProgress by confettiTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 2_200),
+            repeatMode = RepeatMode.Restart
+        ),
+        label = "reverseBeatConfettiProgress"
+    )
+
+    Canvas(modifier = modifier) {
+        val originX = size.width * 0.5f
+        val originY = size.height * 0.16f
+
+        particles.forEach { particle ->
+            val progress = ((cycleProgress - particle.delay) / (1f - particle.delay)).coerceIn(0f, 1f)
+            if (progress <= 0f || progress >= 0.985f) return@forEach
+
+            val sway = (sin((progress * 2f + particle.delay) * PI).toFloat()) * size.width * 0.018f
+            val x = originX + (size.width * particle.velocityX * progress) + sway
+            val y = originY + (size.height * (particle.velocityY * progress + 1.28f * progress * progress))
+            val alpha = when {
+                progress < 0.12f -> progress / 0.12f
+                progress > 0.82f -> (1f - progress) / 0.18f
+                else -> 1f
+            } * 0.9f
+            val center = Offset(x, y)
+
+            rotate(
+                degrees = particle.rotation + (particle.spin * progress),
+                pivot = center
+            ) {
+                drawRoundRect(
+                    color = particle.color.copy(alpha = alpha),
+                    topLeft = Offset(x - (particle.width / 2f), y - (particle.height / 2f)),
+                    size = Size(particle.width, particle.height),
+                    cornerRadius = CornerRadius(particle.height * 0.45f, particle.height * 0.45f)
+                )
+            }
+
+            if (particle.width >= 16f) {
+                drawCircle(
+                    color = Color.White.copy(alpha = alpha * 0.16f),
+                    radius = particle.width * 0.34f,
+                    center = center
+                )
+            }
+        }
+    }
+}
+
+private class ReverseBeatHaptics(context: Context) {
+    private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        context.getSystemService(VibratorManager::class.java)?.defaultVibrator
+    } else {
+        @Suppress("DEPRECATION")
+        context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+    }
+
+    fun vibrateBombReveal() {
+        vibrateOneShot(durationMs = 24L, amplitude = 70)
+    }
+
+    fun vibrateBombHit() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator?.takeIf { it.hasVibrator() }?.vibrate(
+                VibrationEffect.createWaveform(
+                    longArrayOf(0L, 18L, 16L, 40L),
+                    intArrayOf(0, 120, 0, 210),
+                    -1
+                )
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator?.takeIf { it.hasVibrator() }?.vibrate(58L)
+        }
+    }
+
+    private fun vibrateOneShot(durationMs: Long, amplitude: Int) {
+        val safeVibrator = vibrator?.takeIf { it.hasVibrator() } ?: return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            safeVibrator.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
+        } else {
+            @Suppress("DEPRECATION")
+            safeVibrator.vibrate(durationMs)
         }
     }
 }

@@ -22,20 +22,20 @@ enum class KaraokeChallengeProfile(
     val hidesLyricsUntilMatched: Boolean
 ) {
     EASY(
-        label = "Easy",
-        description = "Keep the artist voice in the mix while timing and pitch are still scored.",
+        label = "Lyric Match",
+        description = "Use the microphone to check whether each lyric line was sung closely enough while the original track keeps playing.",
         keepsArtistVoice = true,
         hidesLyricsUntilMatched = false
     ),
     VOICELESS(
-        label = "Voiceless",
-        description = "Mute the artist voice with the prepared instrumental while lyrics stay visible.",
+        label = "Legacy Voiceless",
+        description = "Legacy prepared-backing-track challenge profile.",
         keepsArtistVoice = false,
         hidesLyricsUntilMatched = false
     ),
     HARD(
-        label = "Hard",
-        description = "Mute the artist voice and only reveal lyrics as you sing the active words correctly and on time.",
+        label = "Legacy Hard",
+        description = "Legacy lyric-reveal challenge profile.",
         keepsArtistVoice = false,
         hidesLyricsUntilMatched = true
     );
@@ -46,7 +46,7 @@ enum class KaraokeChallengeProfile(
 
 data class KaraokeUiState(
     val challengeEnabled: Boolean = false,
-    val challengeProfile: KaraokeChallengeProfile = KaraokeChallengeProfile.VOICELESS,
+    val challengeProfile: KaraokeChallengeProfile = KaraokeChallengeProfile.EASY,
     val sessionPhase: KaraokeSessionPhase = KaraokeSessionPhase.IDLE,
     val livesRemaining: Int = 3,
     val maxLives: Int = 3,
@@ -56,6 +56,8 @@ data class KaraokeUiState(
     val statusMessage: String? = null,
     val microphoneRequired: Boolean = false,
     val microphoneUnsupported: Boolean = false,
+    val headphonesConnected: Boolean = true,
+    val challengePausedForHeadphones: Boolean = false,
     val stemProviderAvailable: Boolean = false,
     val preparationInProgress: Boolean = false,
     val backingTrackReady: Boolean = false,
@@ -73,7 +75,8 @@ data class KaraokeUiState(
     val pitchRating: String? = null,
     val activeLineIndex: Int = -1,
     val activeWordIndex: Int = -1,
-    val revealedWordIndexByLine: Map<Int, Int> = emptyMap()
+    val revealedWordIndexByLine: Map<Int, Int> = emptyMap(),
+    val failedLineIndices: Set<Int> = emptySet()
 ) {
     val isSessionActive: Boolean
         get() = sessionPhase != KaraokeSessionPhase.IDLE
@@ -82,8 +85,11 @@ data class KaraokeUiState(
         get() = countdownSeconds > 0
 
     val challengeActive: Boolean
-        get() = challengeEnabled && !microphoneRequired && !microphoneUnsupported
+        get() = challengeEnabled && headphonesConnected && !challengePausedForHeadphones && !microphoneRequired && !microphoneUnsupported
 
     val challengeUsesPreparedBackingTrack: Boolean
         get() = challengeEnabled && challengeProfile.requiresPreparedBackingTrack
+
+    val challengeReady: Boolean
+        get() = !challengeEnabled || (headphonesConnected && !microphoneRequired && !microphoneUnsupported)
 }

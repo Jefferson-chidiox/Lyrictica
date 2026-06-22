@@ -37,6 +37,7 @@ import com.lyrictica.theme.toColorScheme
 import com.lyrictica.ui.GameLaunchPickerDialog
 import com.lyrictica.ui.GameLaunchRequest
 import com.lyrictica.ui.VisualizerScreen
+import com.lyrictica.ui.MusixmatchPreviewScreen
 import com.lyrictica.visualizer.VisualizerViewModel
 import com.oss.euphoriae.data.model.Song
 import com.oss.euphoriae.Destination
@@ -49,9 +50,9 @@ import com.oss.euphoriae.ui.theme.Typography
 import com.oss.euphoriae.ui.viewmodel.MusicViewModel
 
 private enum class RootScreen {
-    SPLASH,
     VISUALIZER,
-    LIBRARY
+    LIBRARY,
+    MUSIXMATCH_PREVIEW
 }
 
 class MainActivity : ComponentActivity() {
@@ -126,7 +127,7 @@ private fun LyricticaApp(
     val playbackQueueState by visualizerViewModel.nowPlayingState.collectAsStateWithLifecycle()
     val visualizerPlaybackState by visualizerViewModel.playbackState.collectAsStateWithLifecycle()
     val registeredQueues by visualizerViewModel.queueLibrary.collectAsStateWithLifecycle()
-    var currentScreen by remember { mutableStateOf(RootScreen.SPLASH) }
+    var currentScreen by remember { mutableStateOf(RootScreen.LIBRARY) }
     var selectedGameSong by remember { mutableStateOf<Song?>(null) }
     var pendingGameLaunch by remember { mutableStateOf<GameLaunchRequest?>(null) }
     var pendingLibraryDestination by remember { mutableStateOf<Destination?>(null) }
@@ -194,7 +195,7 @@ private fun LyricticaApp(
                 onOpenVisualizer = { currentScreen = RootScreen.VISUALIZER },
                 onPreviewMusixmatchResult = { result ->
                     visualizerViewModel.showLyricsPreview(result)
-                    currentScreen = RootScreen.VISUALIZER
+                    currentScreen = RootScreen.MUSIXMATCH_PREVIEW
                 },
                 onOpenGameSong = { song ->
                     selectedGameSong = song
@@ -237,15 +238,28 @@ private fun LyricticaApp(
             }
 
             AnimatedVisibility(
-                visible = currentScreen == RootScreen.SPLASH,
+                visible = currentScreen == RootScreen.MUSIXMATCH_PREVIEW,
                 modifier = Modifier.fillMaxSize(),
-                enter = fadeIn(animationSpec = tween(300)),
-                exit = fadeOut(animationSpec = tween(500))
+                enter = expandVertically(
+                    animationSpec = tween(280),
+                    expandFrom = Alignment.Bottom
+                ) + fadeIn(animationSpec = tween(220)),
+                exit = shrinkVertically(
+                    animationSpec = tween(280),
+                    shrinkTowards = Alignment.Bottom
+                ) + fadeOut(animationSpec = tween(180))
             ) {
-                com.lyrictica.ui.SplashScreen(
-                    onSplashFinished = {
+                MusixmatchPreviewScreen(
+                    viewModel = visualizerViewModel,
+                    onClose = {
+                        visualizerViewModel.clearLyricsPreview()
                         currentScreen = RootScreen.LIBRARY
-                    }
+                    },
+                    onPlaySource = { source ->
+                        visualizerViewModel.playPreviewSource(source)
+                        currentScreen = RootScreen.VISUALIZER
+                    },
+                    modifier = Modifier.fillMaxSize()
                 )
             }
 

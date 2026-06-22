@@ -138,24 +138,31 @@ class AudioAnalysisStore(context: Context) {
                 ?: ""
         }
 
-        val name = "source_${sha1(uri.toString())}$extension"
-        val outFile = File(stagingDir, name)
+        val safeExtension = extension.takeIf { it.startsWith('.') && it.length <= 8 } ?: ""
+        val outFile = File.createTempFile("source_${sha1(uri.toString())}_", safeExtension, stagingDir)
 
-        if (outFile.exists() && outFile.length() > 0L) return outFile
-
-        val inputStream = if (isNetworkUri) {
-            java.net.URL(uri.toString()).openStream()
-        } else {
-            resolver.openInputStream(uri)
-        }
-
-        inputStream?.use { input ->
-            FileOutputStream(outFile).use { output ->
-                input.copyTo(output)
+        return try {
+            val inputStream = if (isNetworkUri) {
+                java.net.URL(uri.toString()).openStream()
+            } else {
+                resolver.openInputStream(uri)
             }
-        } ?: throw IllegalStateException("Unable to open input stream for uri=$uri")
 
-        return outFile
+            inputStream?.use { input ->
+                FileOutputStream(outFile).use { output ->
+                    input.copyTo(output)
+                }
+            } ?: throw IllegalStateException("Unable to open input stream for uri=$uri")
+
+            if (outFile.length() <= 0L) {
+                throw IllegalStateException("Staged source file is empty for uri=$uri")
+            }
+
+            outFile
+        } catch (error: Exception) {
+            runCatching { outFile.delete() }
+            throw error
+        }
     }
 
     private fun cacheKeyFor(uri: Uri, fps: Int): String {

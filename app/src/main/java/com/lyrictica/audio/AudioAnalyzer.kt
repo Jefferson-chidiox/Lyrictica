@@ -2,6 +2,7 @@ package com.lyrictica.audio
 
 import android.net.Uri
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +31,7 @@ class AudioAnalyzer(
     private val scope = kotlinx.coroutines.CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
     private var loadJob: Job? = null
+    private var loadGeneration: Long = 0L
 
     private var spectrumBands: SpectrumBandsPrecomputer.PrecomputedBands? = null
 
@@ -48,6 +50,8 @@ class AudioAnalyzer(
     @Synchronized
     fun load(uri: Uri?) {
         loadJob?.cancel()
+        loadGeneration += 1L
+        val generation = loadGeneration
         spectrumBands = null
         _features.value = AudioFeatures()
 
@@ -67,11 +71,10 @@ class AudioAnalyzer(
                 message = "Computing band spectrum"
             )
 
-            val bands = runCatching {
-                analysisStore.loadOrComputeBands(uri, AUDIO_ANALYSIS_FPS)
-            }
+            try {
+                val data = analysisStore.loadOrComputeBands(uri, AUDIO_ANALYSIS_FPS)
+                if (!isCurrentGeneration(generation)) return@launch
 
-            bands.onSuccess { data ->
                 spectrumBands = data
                 Log.d(TAG, "Band spectrum ready: frames=${data.bass.size}, fps=${data.fps}, durationMs=${data.durationMs}")
                 _status.value = AnalysisStatus(
@@ -79,7 +82,11 @@ class AudioAnalyzer(
                     spectrumReady = true,
                     message = "Band analysis ready"
                 )
-            }.onFailure { e ->
+            } catch (_: CancellationException) {
+                // A newer track replaced this load; keep the newer state intact.
+            } catch (e: Exception) {
+                if (!isCurrentGeneration(generation)) return@launch
+
                 val msg = "Band spectrum precompute failed"
                 Log.w(TAG, "$msg: ${e.localizedMessage}", e)
                 spectrumBands = null
@@ -137,6 +144,9 @@ class AudioAnalyzer(
             treble = sample(bands.treble)
         )
     }
+
+    @Synchronized
+    private fun isCurrentGeneration(generation: Long): Boolean = generation == loadGeneration
 
     fun release() {
         loadJob?.cancel()

@@ -1,7 +1,11 @@
 package com.lyrictica.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -102,10 +106,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import coil.compose.SubcomposeAsyncImage
 import coil.request.ImageRequest
 import com.lyrictica.karaoke.GameModeOption
-import com.lyrictica.visualizer.LyricsPreviewState
 import com.lyrictica.visualizer.VisualizerPalette
 import com.lyrictica.visualizer.VisualizerViewModel
 import com.lyrictica.visualizer.WaveVisualizer
@@ -131,12 +135,28 @@ internal fun VisualizerScreen(
     val karaokeState by viewModel.karaokeUiState.collectAsState()
     val availableLyrics by viewModel.availableLyrics.collectAsState()
     val translationState by viewModel.translationState.collectAsState()
-    val lyricsPreviewState by viewModel.lyricsPreviewState.collectAsState()
     val smoothedFeatures by viewModel.smoothedFeatures.collectAsState()
     val screenTheme by viewModel.screenTheme.collectAsState()
     val context = LocalContext.current
+    val headphonesConnected = rememberHeadphoneConnectionState()
     val gesturePreferences = remember(context) {
         com.lyrictica.visualizer.VisualizerGesturePreferences(context.applicationContext)
+    }
+    var hasMicPermission by remember(context) {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val karaokeMicPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        hasMicPermission = granted
+        if (granted) {
+            viewModel.clearKaraokeMessage()
+            viewModel.startKaraokeSession(challengeMode = true)
+        } else {
+            viewModel.onKaraokePermissionDenied()
+        }
     }
 
     var showGestureTutorial by rememberSaveable { mutableStateOf(false) }
@@ -157,28 +177,26 @@ internal fun VisualizerScreen(
     val musixmatchArtistState by viewModel.musixmatchArtistState.collectAsState()
 
     val activeSong = nowPlayingState.currentSong
-    val isPreviewMode = lyricsPreviewState != null
     val titleText = when {
         musixmatchArtistState.isVisible && musixmatchArtistState.isLoading -> "Loading Artist..."
         musixmatchArtistState.isVisible && musixmatchArtistState.artistName != null -> musixmatchArtistState.artistName!!
         musixmatchArtistState.isVisible && musixmatchArtistState.error != null -> "Error"
-        else -> lyricsPreviewState?.title ?: activeSong?.title ?: playbackState.trackName
+        else -> activeSong?.title ?: playbackState.trackName
     }
     val artistText = when {
         musixmatchArtistState.isVisible && musixmatchArtistState.isLoading -> "Fetching metadata from Musixmatch..."
         musixmatchArtistState.isVisible && musixmatchArtistState.metadataText != null -> musixmatchArtistState.metadataText!!
         musixmatchArtistState.isVisible && musixmatchArtistState.error != null -> musixmatchArtistState.error!!
-        else -> lyricsPreviewState?.artist?.takeIf { it.isNotBlank() } ?: activeSong?.artist?.takeIf { it.isNotBlank() }
+        else -> activeSong?.artist?.takeIf { it.isNotBlank() }
     }
-    val albumText = if (musixmatchArtistState.isVisible) null else lyricsPreviewState?.album?.takeIf { it.isNotBlank() }
-        ?: activeSong?.album?.takeIf { it.isNotBlank() }
+    val albumText = if (musixmatchArtistState.isVisible) null else activeSong?.album?.takeIf { it.isNotBlank() }
     val resolvedLyrics = availableLyrics ?: lyricsUiState.parsed
     val hasAvailableLyrics = resolvedLyrics != null
     val lyricsPanelVisible = lyricsUiState.lyricsVisible && (lyricsUiState.isLoading || hasAvailableLyrics)
-    val isSongLoaded = isPreviewMode || activeSong != null || playbackState.trackName != "No track selected"
-    val canSwitchTracks = nowPlayingState.queue.size > 1 && !isPreviewMode
+    val isSongLoaded = activeSong != null || playbackState.trackName != "No track selected"
+    val canSwitchTracks = nowPlayingState.queue.size > 1
     val reverseBeatFullscreen = showGamePanel && selectedGameMode == GameModeOption.REVERSE_BEAT
-    val ambientModeEligible = isSongLoaded && playbackState.isPlaying && !playbackState.ended && !showVideoPanel && !showGamePanel && !showQueuePanel && !showGameDialog && !musixmatchArtistState.isVisible && !showGestureTutorial && !isPreviewMode && seekVisualState == null
+    val ambientModeEligible = isSongLoaded && playbackState.isPlaying && !playbackState.ended && !showVideoPanel && !showGamePanel && !showQueuePanel && !showGameDialog && !musixmatchArtistState.isVisible && !showGestureTutorial && seekVisualState == null
 
     fun registerUiInteraction() {
         lastUiInteractionAtMs = SystemClock.elapsedRealtime()
@@ -208,9 +226,6 @@ internal fun VisualizerScreen(
             viewModel.toggleMusixmatchArtistInfo()
         }
         showQueuePanel = false
-        if (isPreviewMode) {
-            viewModel.clearLyricsPreview()
-        }
         if (showGamePanel) {
             closeGamePanel()
         }
@@ -228,9 +243,6 @@ internal fun VisualizerScreen(
             viewModel.toggleMusixmatchArtistInfo()
         }
         showQueuePanel = false
-        if (isPreviewMode) {
-            viewModel.clearLyricsPreview()
-        }
         if (showVideoPanel) {
             closeVideoPanel()
         }
@@ -276,12 +288,15 @@ internal fun VisualizerScreen(
             showQueuePanel -> showQueuePanel = false
             showGamePanel -> closeGamePanel()
             showVideoPanel -> closeVideoPanel()
-            isPreviewMode -> viewModel.clearLyricsPreview()
             else -> {
                 registerUiInteraction()
                 onMenuClick()
             }
         }
+    }
+
+    LaunchedEffect(headphonesConnected) {
+        viewModel.setKaraokeHeadphonesConnected(headphonesConnected)
     }
 
     LaunchedEffect(activeSong?.id) {
@@ -312,14 +327,14 @@ internal fun VisualizerScreen(
         viewModel.setInlineVideoVisible(showVideoPanel)
     }
 
-    LaunchedEffect(isSongLoaded, showVideoPanel, showGamePanel, showGameDialog, musixmatchArtistState.isVisible, showGestureTutorial, playbackState.isPlaying, lyricsPanelVisible, lyricsUiState.isLoading, resolvedLyrics, activeSong?.id, isPreviewMode, showQueuePanel, ambientModeActive) {
+    LaunchedEffect(isSongLoaded, showVideoPanel, showGamePanel, showGameDialog, musixmatchArtistState.isVisible, showGestureTutorial, playbackState.isPlaying, lyricsPanelVisible, lyricsUiState.isLoading, resolvedLyrics, activeSong?.id, showQueuePanel, ambientModeActive) {
         showLyricsTooltip = false
 
         val lyricsAreAvailableOrLoading = lyricsUiState.isLoading || hasAvailableLyrics
-        val shouldShowTooltip = isSongLoaded && !isPreviewMode && lyricsAreAvailableOrLoading && !showVideoPanel && !showGamePanel && !showQueuePanel && !showGameDialog && !musixmatchArtistState.isVisible && !showGestureTutorial && playbackState.isPlaying && !lyricsPanelVisible && !ambientModeActive
+        val shouldShowTooltip = isSongLoaded && lyricsAreAvailableOrLoading && !showVideoPanel && !showGamePanel && !showQueuePanel && !showGameDialog && !musixmatchArtistState.isVisible && !showGestureTutorial && playbackState.isPlaying && !lyricsPanelVisible && !ambientModeActive
         if (!shouldShowTooltip) return@LaunchedEffect
 
-        while (isActive && isSongLoaded && !isPreviewMode && lyricsAreAvailableOrLoading && !showVideoPanel && !showGamePanel && !showQueuePanel && !showGameDialog && !musixmatchArtistState.isVisible && !showGestureTutorial && playbackState.isPlaying && !lyricsPanelVisible && !ambientModeActive) {
+        while (isActive && isSongLoaded && lyricsAreAvailableOrLoading && !showVideoPanel && !showGamePanel && !showQueuePanel && !showGameDialog && !musixmatchArtistState.isVisible && !showGestureTutorial && playbackState.isPlaying && !lyricsPanelVisible && !ambientModeActive) {
             delay(kotlin.random.Random.nextLong(18_000L, 42_000L))
             if (!isActive || showVideoPanel || showGamePanel || showQueuePanel || showGameDialog || musixmatchArtistState.isVisible || showGestureTutorial || !playbackState.isPlaying || lyricsPanelVisible || ambientModeActive) break
 
@@ -334,11 +349,11 @@ internal fun VisualizerScreen(
 
     val controlTint = screenTheme.controlText.copy(alpha = 0.72f)
     val mutedTint = screenTheme.mutedText.copy(alpha = 0.40f)
-    val lyricsBackdropActive = !isPreviewMode && playbackState.trackName != "No track selected" && 
+    val lyricsBackdropActive = playbackState.trackName != "No track selected" && 
         (lyricsPanelVisible || (showGamePanel && selectedGameMode == GameModeOption.KARAOKE)) && 
         !showVideoPanel && !showQueuePanel && !reverseBeatFullscreen
     val accent = screenTheme.sliderActiveTrack
-    val topContentHorizontalPadding = if (showVideoPanel || showGamePanel || isPreviewMode) 14.dp else 20.dp
+    val topContentHorizontalPadding = if (showVideoPanel || showGamePanel) 14.dp else 20.dp
     val displayedTimelinePosition by animateFloatAsState(
         targetValue = (seekVisualState?.positionMs ?: playbackState.currentPosition).toFloat(),
         animationSpec = androidx.compose.animation.core.tween(durationMillis = 90),
@@ -391,10 +406,10 @@ internal fun VisualizerScreen(
             }
     ) {
         MusicArtworkBackdrop(
-            artworkUri = if (showVideoPanel || reverseBeatFullscreen || (!showVideoPanel && !showGamePanel && !isPreviewMode)) {
+            artworkUri = if (showVideoPanel || reverseBeatFullscreen || (!showVideoPanel && !showGamePanel)) {
                 null
             } else {
-                if (musixmatchArtistState.isVisible) musixmatchArtistState.imageUrl else lyricsPreviewState?.artworkUri ?: activeSong?.albumArtUri
+                if (musixmatchArtistState.isVisible) musixmatchArtistState.imageUrl else activeSong?.albumArtUri
             },
             theme = screenTheme,
             isLyricsBackdropActive = lyricsBackdropActive,
@@ -409,7 +424,7 @@ internal fun VisualizerScreen(
 
         InvisibleWaveGestureOverlay(
             theme = screenTheme,
-            isEnabled = isSongLoaded && !showVideoPanel && !showGamePanel && !isPreviewMode && !ambientModeActive,
+            isEnabled = isSongLoaded && !showVideoPanel && !showGamePanel && !ambientModeActive,
             currentPositionMs = playbackState.currentPosition,
             durationMs = playbackState.duration,
             onPrevious = {
@@ -445,7 +460,21 @@ internal fun VisualizerScreen(
                 karaokeState = karaokeState,
                 onChallengeToggle = { viewModel.setKaraokeChallengeEnabled(it) },
                 onChallengeProfileSelected = { viewModel.setKaraokeChallengeProfile(it) },
-                onStartKaraoke = { viewModel.startKaraokeSession(challengeMode = false) },
+                onStartKaraoke = {
+                    if (karaokeState.challengeEnabled) {
+                        hasMicPermission = ContextCompat.checkSelfPermission(
+                            context,
+                            Manifest.permission.RECORD_AUDIO
+                        ) == PackageManager.PERMISSION_GRANTED
+                        if (hasMicPermission) {
+                            viewModel.startKaraokeSession(challengeMode = true)
+                        } else {
+                            karaokeMicPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                        }
+                    } else {
+                        viewModel.startKaraokeSession(challengeMode = false)
+                    }
+                },
                 onExitGameMode = { closeGamePanel() },
                 onDismissMessage = { viewModel.clearKaraokeMessage() },
                 modifier = Modifier
@@ -461,9 +490,21 @@ internal fun VisualizerScreen(
         }
 
         if (showGamePanel && selectedGameMode == GameModeOption.REVERSE_BEAT) {
+            val nextSongIndex = if (nowPlayingState.queue.isNotEmpty()) {
+                (nowPlayingState.currentQueueIndex + 1) % nowPlayingState.queue.size
+            } else {
+                -1
+            }
+            val nextSong = if (canSwitchTracks && nextSongIndex in nowPlayingState.queue.indices) {
+                nowPlayingState.queue[nextSongIndex]
+            } else {
+                null
+            }
+
             ReverseBeatGameSurface(
                 theme = screenTheme,
                 songLoaded = activeSong != null,
+                songInstanceKey = "${nowPlayingState.currentQueueIndex}:${activeSong?.id ?: -1L}:${activeSong?.data ?: titleText}",
                 songSeed = (activeSong?.id?.toInt() ?: titleText.hashCode()),
                 trackTitle = titleText,
                 artistText = artistText,
@@ -487,6 +528,13 @@ internal fun VisualizerScreen(
                 onRunFinished = { score ->
                     viewModel.recordGameScore(GameModeOption.REVERSE_BEAT, score)
                 },
+                canAdvanceToNextSong = canSwitchTracks,
+                nextSongTitle = nextSong?.title,
+                nextSongArtist = nextSong?.artist,
+                onPlayNextSong = {
+                    registerUiInteraction()
+                    viewModel.selectVideoModeNextTrack()
+                },
                 onExitGameMode = { closeGamePanel() },
                 onOpenGamesMenu = {
                     closeGamePanel()
@@ -502,7 +550,7 @@ internal fun VisualizerScreen(
                 .fillMaxSize()
                 .align(Alignment.TopCenter)
                 .then(
-                    if (showVideoPanel || showGamePanel || isPreviewMode) {
+                    if (showVideoPanel || showGamePanel) {
                         Modifier.background(
                             Brush.verticalGradient(
                                 colors = listOf(screenTheme.topScrimStart, screenTheme.topScrimEnd)
@@ -534,7 +582,7 @@ internal fun VisualizerScreen(
                 Spacer(modifier = Modifier.height(10.dp))
             }
 
-            if (!showVideoPanel && !showGamePanel && !isPreviewMode) {
+            if (!showVideoPanel && !showGamePanel) {
                 if (!ambientModeActive) {
                 MinimalVisualizerPlaybackChrome(
                     titleText = titleText,
@@ -557,6 +605,7 @@ internal fun VisualizerScreen(
                     controlTint = controlTint,
                     gameSelected = showGameDialog || showGamePanel,
                     aboutSelected = musixmatchArtistState.isVisible,
+                    musixmatchArtistState = musixmatchArtistState,
                     translationState = translationState,
                     onTranslationLanguageSelected = {
                         registerUiInteraction()
@@ -631,7 +680,6 @@ internal fun VisualizerScreen(
                             onClick = {
                                 when {
                                     showVideoPanel -> closeVideoPanel()
-                                    isPreviewMode -> viewModel.clearLyricsPreview()
                                     else -> closeGamePanel()
                                 }
                             },
@@ -641,10 +689,9 @@ internal fun VisualizerScreen(
                                 imageVector = Icons.Default.ArrowDropDown,
                                 contentDescription = when {
                                     showVideoPanel -> "Back to player"
-                                    isPreviewMode -> "Close lyrics preview"
                                     else -> "Exit game mode"
                                 },
-                                tint = if (showVideoPanel || isPreviewMode || showGamePanel) screenTheme.controlText else controlTint,
+                                tint = if (showVideoPanel || showGamePanel) screenTheme.controlText else controlTint,
                                 modifier = Modifier
                                     .size(if (showVideoPanel) 28.dp else 26.dp)
                                     .rotate(90f)
@@ -684,43 +731,6 @@ internal fun VisualizerScreen(
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
                                 )
-                            } else if (isPreviewMode) {
-                                Text(
-                                    text = "MUSIXMATCH PREVIEW",
-                                    color = accent.copy(alpha = 0.92f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 1.2.sp,
-                                    maxLines = 1
-                                )
-
-                                Text(
-                                    text = titleText,
-                                    color = screenTheme.controlText.copy(alpha = 0.94f),
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
-                                Text(
-                                    text = artistText ?: "Lyrics preview",
-                                    color = screenTheme.controlText.copy(alpha = 0.62f),
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis
-                                )
-
-                                if (albumText != null) {
-                                    Text(
-                                        text = albumText,
-                                        color = screenTheme.controlText.copy(alpha = 0.44f),
-                                        fontSize = 9.sp,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
                             } else {
                                 Text(
                                     text = "GAME MODE",
@@ -820,19 +830,7 @@ internal fun VisualizerScreen(
                     }
                 }
 
-                lyricsPreviewState?.let { preview ->
-                    PreviewLyricsPanel(
-                        preview = preview,
-                        lyricsState = lyricsUiState,
-                        parsedLyrics = availableLyrics ?: lyricsUiState.parsed,
-                        theme = screenTheme,
-                        onClose = { viewModel.clearLyricsPreview() },
-                        onPlaySource = { source -> viewModel.playPreviewSource(source) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 16.dp)
-                    )
-                }
+
             }
 
 
@@ -899,7 +897,7 @@ internal fun VisualizerScreen(
                 }
             }
 
-            if (!isPreviewMode && analysisStatus.isBusy && playbackState.trackName != "No track selected") {
+            if (analysisStatus.isBusy && playbackState.trackName != "No track selected") {
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(
                     text = "analyzing audio",
@@ -935,9 +933,7 @@ internal fun VisualizerScreen(
 
         if (ambientModeActive) {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.62f))
+                modifier = Modifier.fillMaxSize()
             ) {
                 if (lyricsPanelVisible) {
                     LyricsOverlay(
@@ -998,6 +994,7 @@ private fun MinimalVisualizerPlaybackChrome(
     controlTint: Color,
     gameSelected: Boolean,
     aboutSelected: Boolean,
+    musixmatchArtistState: com.lyrictica.visualizer.MusixmatchArtistState,
     translationState: com.lyrictica.visualizer.TranslationState,
     onTranslationLanguageSelected: (String?) -> Unit,
     onLyricsToggle: () -> Unit,
@@ -1056,11 +1053,19 @@ private fun MinimalVisualizerPlaybackChrome(
                     .clip(RoundedCornerShape(28.dp)),
                 contentAlignment = Alignment.Center
             ) {
-                SongArtwork(
-                    artworkUri = artworkUri,
-                    dimmed = lyricsVisible,
-                    modifier = Modifier.fillMaxSize()
-                )
+                if (aboutSelected) {
+                    AboutMetadataPanel(
+                        artistState = musixmatchArtistState,
+                        theme = theme,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    SongArtwork(
+                        artworkUri = artworkUri,
+                        dimmed = lyricsVisible,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
 
                 FilledTonalIconButton(
                     onClick = onMenuClick,
@@ -1723,167 +1728,7 @@ private fun formatGestureTime(positionMs: Long): String {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun PreviewLyricsPanel(
-    preview: LyricsPreviewState,
-    lyricsState: com.lyrictica.lyrics.LyricsUiState,
-    parsedLyrics: com.lyrictica.lyrics.ParsedLyrics?,
-    theme: VisualizerPalette,
-    onClose: () -> Unit,
-    onPlaySource: (SearchAvailability) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    GlassPanel(
-        modifier = modifier,
-        fillColor = Color.White.copy(alpha = 0.08f),
-        borderColor = Color.White.copy(alpha = 0.16f)
-    ) {
-        Column(
-            modifier = Modifier.padding(18.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Musixmatch lyrics",
-                        color = theme.sliderActiveTrack,
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        letterSpacing = 1.2.sp,
-                        maxLines = 1
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = preview.title,
-                        color = Color.White,
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    if (preview.artist.isNotBlank()) {
-                        Text(
-                            text = listOf(preview.artist, preview.album).filterNotNull().joinToString(" • "),
-                            color = Color.White.copy(alpha = 0.72f),
-                            fontSize = 12.sp,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                }
 
-                IconButton(onClick = onClose) {
-                    Icon(
-                        imageVector = Icons.Default.ArrowDropDown,
-                        contentDescription = "Close lyrics preview",
-                        tint = Color.White.copy(alpha = 0.82f),
-                        modifier = Modifier.rotate(90f)
-                    )
-                }
-            }
-
-            if (preview.availableSources.isNotEmpty()) {
-                Text(
-                    text = "Available to play in the visualizer",
-                    color = Color.White.copy(alpha = 0.74f),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                FlowRow(
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    preview.availableSources.forEach { source ->
-                        Surface(
-                            onClick = { onPlaySource(source) },
-                            shape = RoundedCornerShape(999.dp),
-                            color = theme.sliderActiveTrack.copy(alpha = 0.16f)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.PlayArrow,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                                Text(
-                                    text = source.platform.displayName,
-                                    color = Color.White,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                            }
-                        }
-                    }
-                }
-            } else {
-                Text(
-                    text = "No local, Spinamp, or NCS playback source matched this result yet.",
-                    color = Color.White.copy(alpha = 0.62f),
-                    fontSize = 12.sp
-                )
-            }
-
-            when {
-                lyricsState.isLoading -> {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            strokeWidth = 2.dp,
-                            color = theme.sliderActiveTrack
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(
-                            text = "Loading Musixmatch lyrics…",
-                            color = Color.White.copy(alpha = 0.80f),
-                            fontSize = 12.sp
-                        )
-                    }
-                }
-
-                parsedLyrics != null -> {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 280.dp)
-                            .verticalScroll(rememberScrollState()),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        parsedLyrics.lines.forEach { line ->
-                            Text(
-                                text = line.text,
-                                color = Color.White.copy(alpha = 0.92f),
-                                fontSize = 14.sp,
-                                lineHeight = 20.sp
-                            )
-                        }
-                    }
-                }
-
-                else -> {
-                    Text(
-                        text = lyricsState.error ?: "No lyrics found for this track.",
-                        color = Color.White.copy(alpha = 0.72f),
-                        fontSize = 13.sp
-                    )
-                }
-            }
-        }
-    }
-}
 
 @Composable
 private fun MusicArtworkBackdrop(
@@ -2091,6 +1936,456 @@ private fun SongArtwork(
                 )
             }
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun AboutMetadataPanel(
+    artistState: com.lyrictica.visualizer.MusixmatchArtistState,
+    theme: VisualizerPalette,
+    modifier: Modifier = Modifier
+) {
+    val accent = theme.sliderActiveTrack
+    val track = artistState.trackRecord
+
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = Color.Black.copy(alpha = 0.55f),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            Brush.verticalGradient(
+                colors = listOf(
+                    Color.White.copy(alpha = 0.14f),
+                    accent.copy(alpha = 0.10f),
+                    Color.White.copy(alpha = 0.06f)
+                )
+            )
+        ),
+        shadowElevation = 20.dp
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            // Subtle gradient backdrop
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.verticalGradient(
+                            colors = listOf(
+                                accent.copy(alpha = 0.06f),
+                                Color.Transparent,
+                                accent.copy(alpha = 0.03f)
+                            )
+                        )
+                    )
+            )
+
+            if (artistState.isLoading) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(32.dp),
+                        color = accent,
+                        strokeWidth = 3.dp
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Text(
+                        text = "Fetching from Musixmatch…",
+                        color = Color.White.copy(alpha = 0.72f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            } else if (artistState.error != null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.MusicNote,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = 0.42f),
+                        modifier = Modifier.size(36.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        text = artistState.error,
+                        color = Color.White.copy(alpha = 0.62f),
+                        fontSize = 12.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            } else {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                ) {
+                    // --- Artist Header ---
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        // Artist avatar
+                        val avatarUrl = artistState.imageUrl
+                        Surface(
+                            modifier = Modifier.size(56.dp),
+                            shape = CircleShape,
+                            color = accent.copy(alpha = 0.18f),
+                            border = androidx.compose.foundation.BorderStroke(
+                                2.dp,
+                                accent.copy(alpha = 0.32f)
+                            )
+                        ) {
+                            if (!avatarUrl.isNullOrBlank()) {
+                                SubcomposeAsyncImage(
+                                    model = avatarUrl,
+                                    contentDescription = "Artist image",
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize(),
+                                    loading = {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = accent
+                                            )
+                                        }
+                                    },
+                                    error = {
+                                        Box(
+                                            modifier = Modifier.fillMaxSize(),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.MusicNote,
+                                                contentDescription = null,
+                                                tint = Color.White.copy(alpha = 0.62f),
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
+                                    }
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier.fillMaxSize(),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.MusicNote,
+                                        contentDescription = null,
+                                        tint = Color.White.copy(alpha = 0.62f),
+                                        modifier = Modifier.size(22.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(14.dp))
+
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = artistState.artistName ?: "Unknown Artist",
+                                color = Color.White.copy(alpha = 0.96f),
+                                fontSize = 17.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (!artistState.artistCountry.isNullOrBlank()) {
+                                Text(
+                                    text = artistState.artistCountry,
+                                    color = Color.White.copy(alpha = 0.58f),
+                                    fontSize = 11.sp,
+                                    maxLines = 1
+                                )
+                            }
+                        }
+
+                        if (artistState.artistRating > 0) {
+                            Surface(
+                                shape = RoundedCornerShape(10.dp),
+                                color = accent.copy(alpha = 0.16f),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp, accent.copy(alpha = 0.24f)
+                                )
+                            ) {
+                                Text(
+                                    text = "★ ${artistState.artistRating}",
+                                    color = accent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    if (!artistState.artistDescription.isNullOrBlank()) {
+                        Text(
+                            text = artistState.artistDescription,
+                            color = Color.White.copy(alpha = 0.76f),
+                            fontSize = 12.sp,
+                            lineHeight = 18.sp,
+                            maxLines = 6,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    // --- Divider ---
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(1.dp)
+                            .background(
+                                Brush.horizontalGradient(
+                                    colors = listOf(
+                                        Color.Transparent,
+                                        Color.White.copy(alpha = 0.10f),
+                                        accent.copy(alpha = 0.14f),
+                                        Color.White.copy(alpha = 0.10f),
+                                        Color.Transparent
+                                    )
+                                )
+                            )
+                    )
+
+                    // --- Track Info ---
+                    if (track != null) {
+                        Text(
+                            text = "TRACK INFO",
+                            color = accent.copy(alpha = 0.72f),
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 1.6.sp
+                        )
+
+                        // Track name & album
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                text = track.trackName,
+                                color = Color.White.copy(alpha = 0.92f),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            if (track.albumName.isNotBlank()) {
+                                Text(
+                                    text = track.albumName,
+                                    color = Color.White.copy(alpha = 0.56f),
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+
+                        // Metadata chips
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            // Duration
+                            if (track.durationSec > 0) {
+                                MetadataChip(
+                                    label = "Duration",
+                                    value = formatDurationChip(track.durationSec),
+                                    accent = accent
+                                )
+                            }
+
+                            // Track Rating
+                            if (track.trackRating > 0) {
+                                MetadataChip(
+                                    label = "Popularity",
+                                    value = "${track.trackRating}/100",
+                                    accent = accent
+                                )
+                            }
+
+                            // Favourites
+                            if (track.numFavourite > 0) {
+                                MetadataChip(
+                                    label = "Favourites",
+                                    value = formatCompactNumber(track.numFavourite),
+                                    accent = accent
+                                )
+                            }
+
+                            // Explicit
+                            if (track.explicit) {
+                                MetadataChip(
+                                    label = "Content",
+                                    value = "Explicit",
+                                    accent = Color(0xFFEF4444)
+                                )
+                            }
+
+                            // Instrumental
+                            if (track.instrumental) {
+                                MetadataChip(
+                                    label = "Type",
+                                    value = "Instrumental",
+                                    accent = accent
+                                )
+                            }
+
+                            // Lyrics availability
+                            if (track.hasLyrics || track.hasSubtitles || track.hasRichsync) {
+                                val syncLevel = when {
+                                    track.hasRichsync -> "Word-Sync"
+                                    track.hasSubtitles -> "Line-Sync"
+                                    else -> "Plain"
+                                }
+                                MetadataChip(
+                                    label = "Lyrics",
+                                    value = syncLevel,
+                                    accent = accent
+                                )
+                            }
+                        }
+
+                        // Genres
+                        if (track.genres.isNotEmpty()) {
+                            Text(
+                                text = "GENRES",
+                                color = accent.copy(alpha = 0.72f),
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                letterSpacing = 1.6.sp
+                            )
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                track.genres.forEach { genre ->
+                                    Surface(
+                                        shape = RoundedCornerShape(999.dp),
+                                        color = Color.White.copy(alpha = 0.07f),
+                                        border = androidx.compose.foundation.BorderStroke(
+                                            1.dp, Color.White.copy(alpha = 0.10f)
+                                        )
+                                    ) {
+                                        Text(
+                                            text = genre,
+                                            color = Color.White.copy(alpha = 0.82f),
+                                            fontSize = 11.sp,
+                                            fontWeight = FontWeight.Medium,
+                                            modifier = Modifier.padding(
+                                                horizontal = 12.dp,
+                                                vertical = 5.dp
+                                            )
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // --- Twitter ---
+                    if (!artistState.artistTwitterUrl.isNullOrBlank()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(Color.White.copy(alpha = 0.04f))
+                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "𝕏",
+                                color = Color.White.copy(alpha = 0.72f),
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = artistState.artistTwitterUrl,
+                                color = Color.White.copy(alpha = 0.54f),
+                                fontSize = 11.sp,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+
+                    // Powered-by footer
+                    Text(
+                        text = "Powered by Musixmatch",
+                        color = Color.White.copy(alpha = 0.28f),
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Medium,
+                        letterSpacing = 0.8.sp,
+                        modifier = Modifier.align(Alignment.CenterHorizontally)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun MetadataChip(
+    label: String,
+    value: String,
+    accent: Color
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = Color.White.copy(alpha = 0.06f),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp, Color.White.copy(alpha = 0.08f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            horizontalAlignment = Alignment.Start
+        ) {
+            Text(
+                text = label.uppercase(),
+                color = Color.White.copy(alpha = 0.42f),
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.2.sp,
+                maxLines = 1
+            )
+            Text(
+                text = value,
+                color = accent,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 1
+            )
+        }
+    }
+}
+
+private fun formatDurationChip(durationSec: Int): String {
+    val minutes = durationSec / 60
+    val seconds = durationSec % 60
+    return "%d:%02d".format(minutes, seconds)
+}
+
+private fun formatCompactNumber(num: Int): String {
+    return when {
+        num >= 1_000_000 -> "%.1fM".format(num / 1_000_000.0)
+        num >= 1_000 -> "%.1fK".format(num / 1_000.0)
+        else -> num.toString()
     }
 }
 

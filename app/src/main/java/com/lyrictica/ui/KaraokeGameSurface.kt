@@ -2,6 +2,7 @@ package com.lyrictica.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -57,6 +58,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.random.Random
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import com.lyrictica.karaoke.KaraokeChallengeProfile
@@ -78,21 +80,33 @@ internal fun KaraokeGameSurface(
     onDismissMessage: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val challengeModeAvailable = false
-    var settingsExpanded by rememberSaveable { mutableStateOf(false) }
-
     val parsed = availableLyrics
     val hasWordSync = parsed?.hasWordSync == true
-    val canStart = hasWordSync &&
-        !karaokeState.preparationInProgress &&
-        !karaokeState.melodyLoading &&
-        (karaokeState.stemProviderAvailable || karaokeState.backingTrackReady)
+    val canStart = if (karaokeState.challengeEnabled) {
+        hasWordSync && karaokeState.challengeReady
+    } else {
+        hasWordSync &&
+            !karaokeState.preparationInProgress &&
+            !karaokeState.melodyLoading &&
+            (karaokeState.stemProviderAvailable || karaokeState.backingTrackReady)
+    }
 
     // Heart loss feedback mechanics
     val lives = karaokeState.livesRemaining
     val active = karaokeState.isSessionActive
     var previousLives by remember { mutableStateOf(lives) }
     var showFlash by remember { mutableStateOf(false) }
+    var showConfetti by remember { mutableStateOf(false) }
+
+    LaunchedEffect(karaokeState.sessionPhase, karaokeState.challengeEnabled, karaokeState.livesRemaining) {
+        if (karaokeState.challengeEnabled && karaokeState.sessionPhase == KaraokeSessionPhase.SUCCESS && karaokeState.livesRemaining > 0) {
+            showConfetti = true
+            kotlinx.coroutines.delay(2400L)
+            showConfetti = false
+        } else if (karaokeState.sessionPhase != KaraokeSessionPhase.SUCCESS) {
+            showConfetti = false
+        }
+    }
 
     LaunchedEffect(lives, active) {
         if (active && lives < previousLives && lives < karaokeState.maxLives) {
@@ -180,44 +194,23 @@ internal fun KaraokeGameSurface(
                                     fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
-                                    text = "Vocals are removed automatically when karaoke starts.",
+                                    text = "Sing along normally, or turn on Challenge mode to verify lyric lines from your mic.",
                                     color = theme.mutedText,
                                     fontSize = 11.sp,
                                     lineHeight = 16.sp
                                 )
                             }
-                            Row(
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                IconButton(onClick = {}, enabled = false) {
-                                    Icon(
-                                        imageVector = Icons.Outlined.Settings,
-                                        contentDescription = "Challenge mode unavailable",
-                                        tint = theme.mutedText.copy(alpha = 0.38f)
-                                    )
-                                }
-                                FilledTonalIconButton(onClick = onExitGameMode, modifier = Modifier.size(40.dp)) {
-                                    Icon(Icons.Outlined.Close, contentDescription = "Exit game mode")
-                                }
+                            FilledTonalIconButton(onClick = onExitGameMode, modifier = Modifier.size(40.dp)) {
+                                Icon(Icons.Outlined.Close, contentDescription = "Exit game mode")
                             }
                         }
 
-                        Text(
-                            text = "Challenge mode is temporarily unavailable.",
-                            color = theme.mutedText.copy(alpha = 0.72f),
-                            fontSize = 11.sp,
-                            lineHeight = 16.sp
+                        KaraokeChallengeSettingsPanel(
+                            theme = theme,
+                            karaokeState = karaokeState,
+                            onChallengeToggle = onChallengeToggle,
+                            onChallengeProfileSelected = onChallengeProfileSelected
                         )
-
-                        AnimatedVisibility(visible = settingsExpanded && challengeModeAvailable) {
-                            KaraokeChallengeSettingsPanel(
-                                theme = theme,
-                                karaokeState = karaokeState,
-                                onChallengeToggle = onChallengeToggle,
-                                onChallengeProfileSelected = onChallengeProfileSelected
-                            )
-                        }
 
                         FlowRow(
                             horizontalArrangement = Arrangement.spacedBy(10.dp),
@@ -227,7 +220,7 @@ internal fun KaraokeGameSurface(
                                 onClick = {},
                                 label = {
                                     Text(
-                                        text = "Instrumental karaoke",
+                                        text = if (karaokeState.challengeEnabled) "Challenge on" else "Instrumental karaoke",
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold
                                     )
@@ -241,12 +234,18 @@ internal fun KaraokeGameSurface(
                                 onClick = {},
                                 label = {
                                     Text(
-                                        text = when {
-                                            karaokeState.preparationInProgress -> "Removing vocals"
-                                            karaokeState.usingPreparedBackingTrack -> "Instrumental live"
-                                            karaokeState.backingTrackReady -> "Instrumental ready"
-                                            karaokeState.stemProviderAvailable -> "Vocals removed on start"
-                                            else -> "Instrumental unavailable"
+                                        text = if (!karaokeState.challengeEnabled) {
+                                            when {
+                                                karaokeState.preparationInProgress -> "Removing vocals"
+                                                karaokeState.usingPreparedBackingTrack -> "Instrumental live"
+                                                karaokeState.backingTrackReady -> "Instrumental ready"
+                                                karaokeState.stemProviderAvailable -> "Vocals removed on start"
+                                                else -> "Instrumental unavailable"
+                                            }
+                                        } else if (karaokeState.headphonesConnected) {
+                                            "Headphones ready"
+                                        } else {
+                                            "Headphones required"
                                         },
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold
@@ -261,10 +260,14 @@ internal fun KaraokeGameSurface(
                                 onClick = {},
                                 label = {
                                     Text(
-                                        text = when {
-                                            karaokeState.melodyLoading -> "Checking cache"
-                                            karaokeState.melodyReady -> "Pitch chart cached"
-                                            else -> "Challenge unavailable"
+                                        text = if (karaokeState.challengeEnabled) {
+                                            if (karaokeState.microphoneRequired) "Mic permission needed" else "Line matching"
+                                        } else {
+                                            when {
+                                                karaokeState.melodyLoading -> "Checking cache"
+                                                karaokeState.melodyReady -> "Pitch chart cached"
+                                                else -> "Sing-along ready"
+                                            }
                                         },
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.SemiBold
@@ -304,21 +307,13 @@ internal fun KaraokeGameSurface(
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
-                            Text(karaokeStartLabel())
+                            Text(karaokeStartLabel(karaokeState.challengeEnabled))
                         }
                     }
                 }
             } else {
                 // ACTIVE GAMEPLAY MODE
-                val revealLyricsAsYouSing = karaokeState.challengeActive && karaokeState.challengeProfile.hidesLyricsUntilMatched
-                val pitchRating = karaokeState.pitchRating
-                val ratingColor = when (pitchRating) {
-                    "Perfect" -> Color(0xFFFBBF24)
-                    "Great" -> Color(0xFF34D399)
-                    "Nice Try" -> Color(0xFF60A5FA)
-                    "Off!" -> Color(0xFFF87171)
-                    else -> if (revealLyricsAsYouSing) theme.sliderActiveTrack.copy(alpha = 0.82f) else theme.mutedText.copy(alpha = 0.6f)
-                }
+                val failedLineIndices = karaokeState.failedLineIndices
 
                 // Scrollable Lyrics Panel mimicking LyricsOverlay
                 if (parsed != null) {
@@ -349,7 +344,7 @@ internal fun KaraokeGameSurface(
                         itemsIndexed(parsed.lines) { index, line ->
                             val isCurrent = index == activeLineIndex
                             if (isCurrent) {
-                                val revealedWordIndex = karaokeState.revealedWordIndexByLine[index] ?: -1
+                                val lineFailed = index in failedLineIndices
                                 FlowRow(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -360,24 +355,19 @@ internal fun KaraokeGameSurface(
                                 ) {
                                     val tokens = line.words
                                     if (tokens.isEmpty()) {
-                                        val lineVisible = !revealLyricsAsYouSing || revealedWordIndex >= 0
                                         Text(
                                             text = line.text,
-                                            color = if (lineVisible) theme.lyricsActive else Color.Transparent,
+                                            color = if (lineFailed) Color(0xFFEF4444) else theme.lyricsActive,
                                             fontSize = 24.sp,
                                             lineHeight = 32.sp,
                                             fontWeight = FontWeight.SemiBold,
-                                            style = if (lineVisible) {
-                                                TextStyle(
-                                                    shadow = Shadow(
-                                                        color = Color.Black.copy(alpha = 0.62f),
-                                                        offset = Offset(0f, 3f),
-                                                        blurRadius = 18f
-                                                    )
+                                            style = TextStyle(
+                                                shadow = Shadow(
+                                                    color = Color.Black.copy(alpha = 0.62f),
+                                                    offset = Offset(0f, 3f),
+                                                    blurRadius = 18f
                                                 )
-                                            } else {
-                                                TextStyle()
-                                            }
+                                            )
                                         )
                                     } else {
                                         tokens.forEachIndexed { wordIndex, word ->
@@ -385,62 +375,63 @@ internal fun KaraokeGameSurface(
                                                 Spacer(modifier = Modifier.width(6.dp))
                                             } else {
                                                 val activeWord = wordIndex == karaokeState.activeWordIndex
-                                                val wordVisible = !revealLyricsAsYouSing || wordIndex <= revealedWordIndex
+                                                val wordColor = when {
+                                                    lineFailed -> Color(0xFFEF4444)
+                                                    activeWord -> theme.sliderActiveTrack
+                                                    else -> theme.lyricsActive
+                                                }
                                                 Text(
                                                     text = word.text,
-                                                    color = if (!wordVisible) {
-                                                        Color.Transparent
-                                                    } else if (activeWord) {
-                                                        theme.sliderActiveTrack
-                                                    } else {
-                                                        theme.lyricsActive
-                                                    },
+                                                    color = wordColor,
                                                     fontSize = 24.sp,
                                                     lineHeight = 32.sp,
-                                                    fontWeight = if (activeWord) FontWeight.Bold else FontWeight.SemiBold,
-                                                    style = if (wordVisible) {
-                                                        TextStyle(
-                                                            shadow = Shadow(
-                                                                color = Color.Black.copy(alpha = if (activeWord) 0.82f else 0.62f),
-                                                                offset = Offset(0f, 3f),
-                                                                blurRadius = if (activeWord) 22f else 18f
-                                                            )
+                                                    fontWeight = if (activeWord && !lineFailed) FontWeight.Bold else FontWeight.SemiBold,
+                                                    style = TextStyle(
+                                                        shadow = Shadow(
+                                                            color = Color.Black.copy(alpha = if (activeWord && !lineFailed) 0.82f else 0.62f),
+                                                            offset = Offset(0f, 3f),
+                                                            blurRadius = if (activeWord && !lineFailed) 22f else 18f
                                                         )
-                                                    } else {
-                                                        TextStyle()
-                                                    }
+                                                    )
                                                 )
                                             }
                                         }
                                     }
                                 }
                             } else {
-                                val lineVisible = !revealLyricsAsYouSing || karaokeState.revealedWordIndexByLine[index] == Int.MAX_VALUE
+                                val lineColor = if (index in failedLineIndices) Color(0xFFEF4444) else theme.lyricsInactive
                                 Text(
                                     text = line.text.takeUnless { it.equals("null", ignoreCase = true) }?.ifBlank { " " } ?: " ",
-                                    color = if (lineVisible) theme.lyricsInactive else Color.Transparent,
+                                    color = lineColor,
                                     fontSize = 24.sp,
                                     lineHeight = 32.sp,
                                     fontWeight = FontWeight.Normal,
                                     textAlign = TextAlign.Start,
                                     softWrap = true,
-                                    style = if (lineVisible) {
-                                        TextStyle(
-                                            shadow = Shadow(
-                                                color = Color.Black.copy(alpha = 0.46f),
-                                                offset = Offset(0f, 3f),
-                                                blurRadius = 12f
-                                            )
+                                    style = TextStyle(
+                                        shadow = Shadow(
+                                            color = Color.Black.copy(alpha = 0.46f),
+                                            offset = Offset(0f, 3f),
+                                            blurRadius = 12f
                                         )
-                                    } else {
-                                        TextStyle()
-                                    },
+                                    ),
                                     modifier = Modifier
                                         .fillMaxWidth()
                                         .heightIn(min = lineHeightDp)
                                         .padding(vertical = 8.dp)
                                 )
                             }
+                        }
+                        item {
+                            Text(
+                                text = "lyrics by musixmatch",
+                                color = theme.lyricsInactive.copy(alpha = 0.5f),
+                                fontSize = 14.sp,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 16.dp),
+                                textAlign = TextAlign.Start
+                            )
                         }
                     }
                 }
@@ -482,50 +473,33 @@ internal fun KaraokeGameSurface(
                     }
 
                     Text(
-                        text = pitchRating ?: if (revealLyricsAsYouSing) "Reveal mode" else "Listening",
-                        color = ratingColor,
+                        text = when {
+                            karaokeState.challengePausedForHeadphones -> "Paused"
+                            karaokeState.challengeEnabled && karaokeState.livesRemaining == 0 -> "Run over"
+                            karaokeState.challengeEnabled -> "Listening"
+                            else -> "Sing-along"
+                        },
+                        color = if (karaokeState.challengePausedForHeadphones || (karaokeState.challengeEnabled && karaokeState.livesRemaining == 0)) {
+                            Color(0xFFEF4444)
+                        } else {
+                            theme.mutedText.copy(alpha = 0.82f)
+                        },
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
                         letterSpacing = 1.sp
                     )
 
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                    IconButton(
+                        onClick = onExitGameMode,
+                        modifier = Modifier.size(32.dp)
                     ) {
-                        IconButton(
-                            onClick = {},
-                            enabled = false,
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Settings,
-                                contentDescription = "Challenge mode unavailable",
-                                tint = theme.mutedText.copy(alpha = 0.38f),
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                        IconButton(
-                            onClick = onExitGameMode,
-                            modifier = Modifier.size(32.dp)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Close,
-                                contentDescription = "Exit game mode",
-                                tint = theme.controlText,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
+                        Icon(
+                            imageVector = Icons.Outlined.Close,
+                            contentDescription = "Exit game mode",
+                            tint = theme.controlText,
+                            modifier = Modifier.size(18.dp)
+                        )
                     }
-                }
-
-                AnimatedVisibility(visible = settingsExpanded && challengeModeAvailable) {
-                    KaraokeChallengeSettingsPanel(
-                        theme = theme,
-                        karaokeState = karaokeState,
-                        onChallengeToggle = onChallengeToggle,
-                        onChallengeProfileSelected = onChallengeProfileSelected
-                    )
                 }
 
                 if (karaokeState.statusMessage != null) {
@@ -534,29 +508,12 @@ internal fun KaraokeGameSurface(
             }
         }
 
-        // Redesigned Countdown/Miss overlay
-        if (karaokeState.isCountingDown) {
-            val isMissed = karaokeState.sessionPhase == KaraokeSessionPhase.MISSED
-            val isFailed = karaokeState.sessionPhase == KaraokeSessionPhase.FAILED
-            val overlayBg = if (isMissed || isFailed) {
-                Color.Black.copy(alpha = 0.82f)
-            } else {
-                Color.Black.copy(alpha = 0.52f)
-            }
-
+        if (karaokeState.isCountingDown && karaokeState.sessionPhase == KaraokeSessionPhase.COUNTDOWN) {
             Box(
                 modifier = Modifier
-                    .matchParentSize()
+                    .fillMaxSize()
                     .clip(RoundedCornerShape(24.dp))
-                    .background(overlayBg)
-                    .drawBehind {
-                        if (isMissed || isFailed) {
-                            drawRect(
-                                color = Color.Red.copy(alpha = 0.08f),
-                                size = size
-                            )
-                        }
-                    },
+                    .background(Color.Black.copy(alpha = 0.52f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -564,23 +521,13 @@ internal fun KaraokeGameSurface(
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                     modifier = Modifier.padding(24.dp)
                 ) {
-                    if (isMissed || isFailed) {
-                        Text(
-                            text = if (isFailed) "RUN FAILED" else "CUE MISSED",
-                            color = Color(0xFFEF4444),
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 2.sp
-                        )
-                    }
-
                     Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .size(90.dp)
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.06f))
-                            .border(2.dp, if (isMissed || isFailed) Color(0xFFEF4444).copy(alpha = 0.6f) else Color.White.copy(alpha = 0.2f), CircleShape)
+                            .border(2.dp, Color.White.copy(alpha = 0.2f), CircleShape)
                     ) {
                         Text(
                             text = karaokeState.countdownSeconds.toString(),
@@ -591,36 +538,19 @@ internal fun KaraokeGameSurface(
                     }
 
                     Text(
-                        text = when {
-                            isFailed -> "No lives remaining — restarting the track"
-                            isMissed -> "Lost 1 Heart — rewinding 2 lines for re-entry"
-                            else -> "Music resumes in a moment"
-                        },
+                        text = if (karaokeState.challengeEnabled) "Headphones on. Mic ready. Go on the beat."
+                        else "Music resumes in a moment",
                         color = Color.White.copy(alpha = 0.86f),
                         fontSize = 13.sp,
                         textAlign = TextAlign.Center,
                         fontWeight = FontWeight.Medium
                     )
-
-                    if (isMissed || isFailed) {
-                        Row(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(top = 4.dp)
-                        ) {
-                            repeat(karaokeState.maxLives) { index ->
-                                val alive = index < karaokeState.livesRemaining
-                                Icon(
-                                    imageVector = Icons.Default.Favorite,
-                                    contentDescription = null,
-                                    tint = if (alive) theme.sliderActiveTrack else Color.White.copy(alpha = 0.16f),
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
                 }
             }
+        }
+
+        if (showConfetti) {
+            SuccessConfettiOverlay(modifier = Modifier.fillMaxSize())
         }
     }
 }
@@ -667,70 +597,19 @@ private fun KaraokeChallengeSettingsPanel(
                 horizontalArrangement = Arrangement.spacedBy(14.dp)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
-                    textRating(text = "Challenge mode", color = theme.controlText, fontSize = 14.sp)
+                    textRating(text = "Challenge mode (Coming Soon)", color = theme.controlText.copy(alpha = 0.38f), fontSize = 14.sp)
                     Text(
-                        text = "Uses the device microphone, costs lives on misses, rewinds two lyric lines, and relaunches after a five-second countdown.",
-                        color = theme.mutedText,
+                        text = "Headphones required. Lyrictica listens in the background and checks each lyric line without interrupting the song.",
+                        color = theme.mutedText.copy(alpha = 0.38f),
                         fontSize = 11.sp,
                         lineHeight = 16.sp
                     )
                 }
                 Switch(
-                    checked = karaokeState.challengeEnabled,
-                    onCheckedChange = onChallengeToggle
+                    checked = false,
+                    onCheckedChange = null,
+                    enabled = false
                 )
-            }
-
-            AnimatedVisibility(visible = karaokeState.challengeEnabled) {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(
-                        text = "Challenge flavor",
-                        color = theme.controlText,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    KaraokeChallengeProfile.values().forEach { profile ->
-                        val selected = karaokeState.challengeProfile == profile
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(18.dp))
-                                .background(
-                                    if (selected) {
-                                        theme.sliderActiveTrack.copy(alpha = 0.14f)
-                                    } else {
-                                        Color.White.copy(alpha = 0.04f)
-                                    }
-                                )
-                                .border(
-                                    width = 1.dp,
-                                    color = if (selected) {
-                                        theme.sliderActiveTrack.copy(alpha = 0.72f)
-                                    } else {
-                                        theme.pillBorder.copy(alpha = 0.24f)
-                                    },
-                                    shape = RoundedCornerShape(18.dp)
-                                )
-                                .clickable { onChallengeProfileSelected(profile) }
-                                .padding(horizontal = 14.dp, vertical = 12.dp)
-                        ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text(
-                                    text = profile.label,
-                                    color = if (selected) theme.sliderActiveTrack else theme.controlText,
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Text(
-                                    text = profile.description,
-                                    color = theme.mutedText,
-                                    fontSize = 11.sp,
-                                    lineHeight = 16.sp
-                                )
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -742,6 +621,14 @@ private fun karaokeOverviewMessage(
 ): String {
     if (!hasWordSync) {
         return "Word-synced lyrics are still missing for this track, so karaoke cannot launch yet."
+    }
+    if (karaokeState.challengeEnabled) {
+        return when {
+            !karaokeState.headphonesConnected -> "Plug in headphones before starting challenge mode so the mic hears you instead of the song."
+            karaokeState.microphoneRequired -> "Allow microphone access so Lyrictica can listen for each lyric line."
+            karaokeState.microphoneUnsupported -> "This device cannot provide speech recognition for challenge mode right now."
+            else -> "Challenge mode keeps the song moving forward, turns missed lines red, and costs a heart each time a line does not match."
+        }
     }
     if (karaokeState.preparationInProgress) {
         return "LALAL.AI is removing the artist vocal and caching the karaoke instrumental on this device."
@@ -758,7 +645,7 @@ private fun karaokeOverviewMessage(
     return "Karaoke without vocals is unavailable on this build because LALAL.AI is not configured."
 }
 
-private fun karaokeStartLabel(): String = "Start karaoke"
+private fun karaokeStartLabel(challengeEnabled: Boolean): String = if (challengeEnabled) "Start challenge" else "Start karaoke"
 
 @Composable
 private fun KaraokeStatusMessage(
@@ -776,3 +663,58 @@ private fun KaraokeStatusMessage(
             .padding(horizontal = 12.dp, vertical = 8.dp)
     )
 }
+
+@Composable
+private fun SuccessConfettiOverlay(modifier: Modifier = Modifier) {
+    val particles = remember {
+        List(52) { index ->
+            ConfettiParticle(
+                startX = Random.nextFloat(),
+                startY = Random.nextFloat() * 0.18f,
+                drift = Random.nextFloat() * 0.24f - 0.12f,
+                size = 6f + Random.nextFloat() * 12f,
+                delay = Random.nextFloat() * 0.28f,
+                color = listOf(
+                    Color(0xFFFBBF24),
+                    Color(0xFF60A5FA),
+                    Color(0xFF34D399),
+                    Color(0xFFF472B6),
+                    Color(0xFFFB7185)
+                )[index % 5]
+            )
+        }
+    }
+    var targetProgress by remember { mutableStateOf(0f) }
+    val progress by animateFloatAsState(
+        targetValue = targetProgress,
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 2200),
+        label = "confettiProgress"
+    )
+
+    LaunchedEffect(Unit) {
+        targetProgress = 1f
+    }
+
+    Canvas(modifier = modifier) {
+        particles.forEach { particle ->
+            val localProgress = ((progress - particle.delay) / (1f - particle.delay)).coerceIn(0f, 1f)
+            if (localProgress <= 0f) return@forEach
+            val x = (particle.startX + particle.drift * localProgress) * size.width
+            val y = (particle.startY + (0.16f + localProgress * 0.88f)) * size.height
+            drawCircle(
+                color = particle.color.copy(alpha = (1f - localProgress * 0.55f).coerceIn(0.25f, 1f)),
+                radius = particle.size,
+                center = Offset(x, y)
+            )
+        }
+    }
+}
+
+private data class ConfettiParticle(
+    val startX: Float,
+    val startY: Float,
+    val drift: Float,
+    val size: Float,
+    val delay: Float,
+    val color: Color
+)

@@ -12,7 +12,7 @@ internal data class MusixmatchLyrics(
     val richSyncBody: String? = null
 )
 
-internal data class MusixmatchTrackRecord(
+data class MusixmatchTrackRecord(
     val trackId: Long,
     val trackName: String,
     val artistName: String,
@@ -22,7 +22,12 @@ internal data class MusixmatchTrackRecord(
     val hasLyrics: Boolean,
     val hasSubtitles: Boolean,
     val hasRichsync: Boolean,
-    val trackRating: Int
+    val trackRating: Int,
+    val numFavourite: Int = 0,
+    val updatedTime: String = "",
+    val genres: List<String> = emptyList(),
+    val explicit: Boolean = false,
+    val albumCoverUrl: String? = null
 )
 
 internal data class TrackSignature(
@@ -37,5 +42,6 @@ internal data class MusixmatchArtistMetadata(
     val country: String,
     val twitterUrl: String,
     val rating: Int,
-    val imageUrl: String?
+    val imageUrl: String?,
+    val description: String? = null
 )

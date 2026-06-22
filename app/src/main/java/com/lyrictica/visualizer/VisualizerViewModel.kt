@@ -21,11 +21,13 @@ import com.lyrictica.karaoke.GameModeOption
 import com.lyrictica.karaoke.KaraokeChallengeProfile
 import com.lyrictica.karaoke.KaraokeLineWindow
 import com.lyrictica.karaoke.KaraokeMelodyReference
+import com.lyrictica.karaoke.KaraokeLineSpeechMatcher
 import com.lyrictica.karaoke.KaraokeMicMonitor
 import com.lyrictica.karaoke.KaraokePitchMath
 import com.lyrictica.karaoke.KaraokePreparationProgress
 import com.lyrictica.karaoke.KaraokePreparationStage
 import com.lyrictica.karaoke.KaraokeSessionPhase
+import com.lyrictica.karaoke.KaraokeSpeechRecognizer
 import com.lyrictica.karaoke.KaraokeTimingJudge
 import com.lyrictica.karaoke.KaraokeUiState
 import com.lyrictica.karaoke.MicrophonePitchSample
@@ -49,6 +51,9 @@ import com.oss.euphoriae.data.preferences.ThemeColorOption
 import com.oss.euphoriae.search.MusixmatchSearchResult
 import com.oss.euphoriae.search.SearchAvailability
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -92,7 +97,12 @@ data class MusixmatchArtistState(
     val artistName: String? = null,
     val metadataText: String? = null,
     val imageUrl: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    val trackRecord: com.lyrictica.lyrics.MusixmatchTrackRecord? = null,
+    val artistCountry: String? = null,
+    val artistTwitterUrl: String? = null,
+    val artistRating: Int = 0,
+    val artistDescription: String? = null
 )
 
 data class TranslationState(
@@ -171,6 +181,18 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
     private val karaokeResolvedLines = linkedSetOf<Int>()
     private var latestMicSample = MicrophonePitchSample(rms = 0f, pitchHz = null, confidence = 0f, voiced = false)
     private var lastKaraokePositionMs: Long? = null
+    private val karaokeSpeechRecognizer = KaraokeSpeechRecognizer(
+        context = application,
+        onCandidatesUpdated = { _, _ -> },
+        onRecognizerIssue = { message ->
+            _karaokeUiState.update {
+                it.copy(
+                    microphoneUnsupported = true,
+                    statusMessage = message
+                )
+            }
+        }
+    )
     private val karaokeMicMonitor = KaraokeMicMonitor { sample ->
         latestMicSample = sample
         _karaokeUiState.update {
@@ -429,7 +451,6 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun showLyricsPreview(result: MusixmatchSearchResult) {
-        pausePlayback()
         _lyricsPreviewState.value = LyricsPreviewState(
             title = result.title,
             artist = result.artist,
@@ -456,7 +477,9 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
             return
         }
 
-        val activeArtist = nowPlayingState.value.currentSong?.artist?.takeIf { it.isNotBlank() }
+        val activeSong = nowPlayingState.value.currentSong
+        val activeArtist = activeSong?.artist?.takeIf { it.isNotBlank() }
+        val activeTitle = activeSong?.title?.takeIf { it.isNotBlank() }
         if (activeArtist == null) {
             _musixmatchArtistState.value = MusixmatchArtistState(
                 isVisible = true,
@@ -472,22 +495,43 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
 
         viewModelScope.launch {
             try {
-                val metadata = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    musixmatchClient.getArtistMetadata(activeArtist)
+                val metadata: com.lyrictica.lyrics.MusixmatchArtistMetadata?
+                val trackRecord: com.lyrictica.lyrics.MusixmatchTrackRecord?
+
+                coroutineScope {
+                    val artistDeferred = async(Dispatchers.IO) {
+                        musixmatchClient.getArtistMetadata(activeArtist)
+                    }
+                    val trackDeferred = async(Dispatchers.IO) {
+                        musixmatchClient.search(
+                            trackName = activeTitle,
+                            artistName = activeArtist
+                        ).firstOrNull()
+                    }
+                    metadata = artistDeferred.await()
+                    trackRecord = trackDeferred.await()
                 }
 
-                if (metadata != null) {
+                if (metadata != null || trackRecord != null) {
                     val metadataParts = listOfNotNull(
-                        metadata.country.takeIf { it.isNotBlank() }?.let { "Country: $it" },
-                        metadata.rating.takeIf { it > 0 }?.let { "Rating: $it" }
+                        metadata?.country?.takeIf { it.isNotBlank() }?.let { "Country: $it" },
+                        metadata?.rating?.takeIf { it > 0 }?.let { "Rating: $it" }
                     )
-                    
+
+                    val resolvedImageUrl = trackRecord?.albumCoverUrl
+                        ?: metadata?.imageUrl
+
                     _musixmatchArtistState.value = MusixmatchArtistState(
                         isVisible = true,
                         isLoading = false,
-                        artistName = metadata.name,
+                        artistName = metadata?.name ?: activeArtist,
                         metadataText = metadataParts.joinToString(" • ").takeIf { it.isNotEmpty() } ?: "No additional metadata",
-                        imageUrl = metadata.imageUrl
+                        imageUrl = resolvedImageUrl,
+                        trackRecord = trackRecord,
+                        artistCountry = metadata?.country?.takeIf { it.isNotBlank() },
+                        artistTwitterUrl = metadata?.twitterUrl?.takeIf { it.isNotBlank() },
+                        artistRating = metadata?.rating ?: 0,
+                        artistDescription = metadata?.description
                     )
                 } else {
                     _musixmatchArtistState.value = MusixmatchArtistState(
@@ -531,49 +575,50 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
     fun togglePlayPause() {
         val state = playbackState.value
         if (state.isPlaying) {
+            karaokeSpeechRecognizer.cancelActive()
+            karaokeMicMonitor.stop()
             playerController.pause()
         } else {
             playerController.play()
+            if (_karaokeUiState.value.isSessionActive) {
+                karaokeMicMonitor.start()
+            }
         }
         persistPlaybackSession()
     }
 
     fun pausePlayback() {
+        karaokeSpeechRecognizer.cancelActive()
+        karaokeMicMonitor.stop()
         playerController.pause()
         persistPlaybackSession(forcePaused = true)
     }
 
     fun resumePlayback() {
         playerController.play()
+        if (_karaokeUiState.value.isSessionActive) {
+            karaokeMicMonitor.start()
+        }
         persistPlaybackSession()
     }
 
     fun setKaraokeChallengeEnabled(enabled: Boolean) {
         if (!enabled) {
             pendingKaraokeStartAfterPreparation = PendingKaraokeStartMode.NONE
+            karaokeSpeechRecognizer.clearAll()
         }
-        val current = _karaokeUiState.value
-        val usingPreparedBackingTrack = syncKaraokeChallengePlayback(
-            enabled = enabled,
-            profile = current.challengeProfile,
-            sessionActive = current.isSessionActive,
-            currentlyUsingPreparedBackingTrack = current.usingPreparedBackingTrack
-        )
         _karaokeUiState.update {
             it.copy(
                 challengeEnabled = enabled,
+                challengeProfile = KaraokeChallengeProfile.EASY,
                 microphoneRequired = false,
                 microphoneUnsupported = false,
-                usingPreparedBackingTrack = if (it.isSessionActive) usingPreparedBackingTrack else false,
+                challengePausedForHeadphones = false,
+                usingPreparedBackingTrack = false,
                 statusMessage = when {
                     it.preparationInProgress -> it.statusMessage
-                    enabled -> challengeModeStatusMessage(
-                        enabled = true,
-                        profile = it.challengeProfile,
-                        melodyReady = it.melodyReady,
-                        stemProviderAvailable = it.stemProviderAvailable,
-                        backingTrackReady = it.backingTrackReady
-                    )
+                    enabled && !it.headphonesConnected -> "Connect headphones to use challenge mode."
+                    enabled -> "Challenge mode listens for each lyric line through your mic."
                     else -> null
                 }
             )
@@ -581,26 +626,52 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun setKaraokeChallengeProfile(profile: KaraokeChallengeProfile) {
-        val current = _karaokeUiState.value
-        val usingPreparedBackingTrack = syncKaraokeChallengePlayback(
-            enabled = current.challengeEnabled,
-            profile = profile,
-            sessionActive = current.isSessionActive,
-            currentlyUsingPreparedBackingTrack = current.usingPreparedBackingTrack
-        )
+        _karaokeUiState.update { it.copy(challengeProfile = profile) }
+    }
+
+    fun setKaraokeHeadphonesConnected(connected: Boolean) {
+        val previous = _karaokeUiState.value
+        if (previous.headphonesConnected == connected) return
+
+        if (previous.isSessionActive && previous.challengeEnabled) {
+            if (!connected) {
+                karaokeSpeechRecognizer.cancelActive()
+                karaokeMicMonitor.stop()
+                playerController.pause()
+                _karaokeUiState.update {
+                    it.copy(
+                        headphonesConnected = false,
+                        challengePausedForHeadphones = true,
+                        statusMessage = "Reconnect headphones to continue challenge mode."
+                    )
+                }
+                persistPlaybackSession(forcePaused = true)
+                return
+            }
+
+            if (previous.challengePausedForHeadphones) {
+                _karaokeUiState.update {
+                    it.copy(
+                        headphonesConnected = true,
+                        challengePausedForHeadphones = false,
+                        statusMessage = null
+                    )
+                }
+                playerController.play()
+                karaokeMicMonitor.start()
+                persistPlaybackSession()
+                return
+            }
+        }
+
         _karaokeUiState.update {
             it.copy(
-                challengeProfile = profile,
-                usingPreparedBackingTrack = if (it.isSessionActive) usingPreparedBackingTrack else false,
+                headphonesConnected = connected,
+                challengePausedForHeadphones = if (connected) it.challengePausedForHeadphones else false,
                 statusMessage = when {
                     it.preparationInProgress -> it.statusMessage
-                    it.challengeEnabled -> challengeModeStatusMessage(
-                        enabled = true,
-                        profile = profile,
-                        melodyReady = it.melodyReady,
-                        stemProviderAvailable = it.stemProviderAvailable,
-                        backingTrackReady = it.backingTrackReady
-                    )
+                    it.challengeEnabled && !connected -> "Connect headphones to use challenge mode."
+                    it.challengeEnabled && connected -> "Challenge mode listens for each lyric line through your mic."
                     else -> it.statusMessage
                 }
             )
@@ -620,7 +691,7 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         _karaokeUiState.update {
             it.copy(
                 microphoneUnsupported = true,
-                statusMessage = "This device does not expose a usable microphone."
+                statusMessage = "Speech recognition is not available on this device."
             )
         }
     }
@@ -630,7 +701,11 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
             it.copy(
                 microphoneRequired = false,
                 microphoneUnsupported = false,
-                statusMessage = if (it.preparationInProgress) it.statusMessage else null
+                statusMessage = when {
+                    it.preparationInProgress -> it.statusMessage
+                    it.challengeEnabled && !it.headphonesConnected -> "Connect headphones to use challenge mode."
+                    else -> null
+                }
             )
         }
     }
@@ -724,7 +799,20 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         val karaokeState = _karaokeUiState.value
-        if (!challengeMode) {
+        if (challengeMode) {
+            when {
+                !karaokeState.headphonesConnected -> {
+                    _karaokeUiState.update {
+                        it.copy(statusMessage = "Connect headphones to use challenge mode.")
+                    }
+                    return
+                }
+                !karaokeSpeechRecognizer.isAvailable -> {
+                    onKaraokeMicrophoneUnavailable()
+                    return
+                }
+            }
+        } else {
             when {
                 karaokeState.melodyLoading && karaokeInstrumentalUri == null -> {
                     pendingKaraokeStartAfterPreparation = PendingKaraokeStartMode.SING_ALONG
@@ -747,25 +835,6 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
             }
         }
 
-        if (challengeMode && karaokeState.melodyLoading) {
-            pendingKaraokeStartAfterPreparation = PendingKaraokeStartMode.CHALLENGE
-            _karaokeUiState.update {
-                it.copy(statusMessage = "Preparing the challenge melody map. Karaoke will start when it is ready.")
-            }
-            return
-        }
-        if (challengeMode && karaokeMelodyReference == null) {
-            if (!karaokeState.stemProviderAvailable && !karaokeState.backingTrackReady) {
-                pendingKaraokeStartAfterPreparation = PendingKaraokeStartMode.NONE
-                _karaokeUiState.update {
-                    it.copy(statusMessage = "Challenge mode needs LALAL.AI karaoke prep, but this build is not configured for it.")
-                }
-                return
-            }
-            prepareKaraokeAssets(autoStartMode = PendingKaraokeStartMode.CHALLENGE)
-            return
-        }
-
         pendingKaraokeStartAfterPreparation = PendingKaraokeStartMode.NONE
         karaokeLineWindows = KaraokeTimingJudge.buildLineWindows(parsed)
         if (karaokeLineWindows.isEmpty()) {
@@ -776,28 +845,16 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         }
 
         karaokeCountdownJob?.cancel()
+        karaokeSpeechRecognizer.clearAll()
         karaokeMicMonitor.stop()
         karaokeLineVoicedMs.clear()
         karaokeLineInTuneMs.clear()
         karaokeResolvedLines.clear()
-        val startPositionMs = playerController.getCurrentPositionMs().coerceAtLeast(0L)
+        val startPositionMs = 0L
         lastKaraokePositionMs = startPositionMs
         latestMicSample = MicrophonePitchSample(rms = 0f, pitchHz = null, confidence = 0f, voiced = false)
 
-        if (challengeMode && !karaokeMicMonitor.start()) {
-            _karaokeUiState.update {
-                it.copy(
-                    challengeEnabled = true,
-                    microphoneUnsupported = true,
-                    statusMessage = "Microphone capture could not start on this device."
-                )
-            }
-            return
-        }
-
-        val challengeProfile = karaokeState.challengeProfile
-        val usingPreparedBackingTrack = karaokeInstrumentalUri != null &&
-            (!challengeMode || challengeProfile.requiresPreparedBackingTrack)
+        val usingPreparedBackingTrack = !challengeMode && karaokeInstrumentalUri != null
 
         playerController.pause()
         if (usingPreparedBackingTrack) {
@@ -809,28 +866,25 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         val previous = _karaokeUiState.value
         _karaokeUiState.value = KaraokeUiState(
             challengeEnabled = challengeMode,
-            challengeProfile = challengeProfile,
+            challengeProfile = KaraokeChallengeProfile.EASY,
             sessionPhase = KaraokeSessionPhase.COUNTDOWN,
             livesRemaining = 3,
             maxLives = 3,
             combo = 0,
             clearedLines = 0,
             countdownSeconds = 3,
-            statusMessage = when {
-                !challengeMode -> "Instrumental karaoke"
-                challengeProfile == KaraokeChallengeProfile.EASY -> "Easy challenge — artist vocals stay in the mix"
-                challengeProfile == KaraokeChallengeProfile.VOICELESS -> "Voiceless challenge — headphones recommended"
-                else -> "Hard challenge — sing to reveal the words"
-            },
+            statusMessage = if (challengeMode) "Challenge mode" else "Instrumental karaoke",
             microphoneRequired = false,
             microphoneUnsupported = false,
+            headphonesConnected = previous.headphonesConnected,
+            challengePausedForHeadphones = false,
             stemProviderAvailable = previous.stemProviderAvailable,
             preparationInProgress = false,
             backingTrackReady = previous.backingTrackReady,
             cachedStemReady = previous.cachedStemReady,
             usingPreparedBackingTrack = usingPreparedBackingTrack,
             melodyLoading = false,
-            melodyReady = karaokeMelodyReference != null,
+            melodyReady = previous.melodyReady,
             latestPitchHz = null,
             latestConfidence = 0f,
             latestRms = 0f,
@@ -841,27 +895,21 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
             pitchRating = null,
             activeLineIndex = 0,
             activeWordIndex = 0,
-            revealedWordIndexByLine = emptyMap()
+            revealedWordIndexByLine = emptyMap(),
+            failedLineIndices = emptySet()
         )
 
         startKaraokeCountdown(
             seconds = 3,
             phase = KaraokeSessionPhase.COUNTDOWN,
-            statusMessage = when {
-                !challengeMode -> "Vocals removed — ready when you are"
-                challengeProfile == KaraokeChallengeProfile.HARD -> "Sing on cue to reveal each word"
-                else -> "Hit the cue and stay in tune"
-            }
+            statusMessage = if (challengeMode) "Get ready to sing" else "Vocals removed — ready when you are"
         ) {
             playerController.play()
+            karaokeMicMonitor.start()
             _karaokeUiState.update {
                 it.copy(
                     sessionPhase = KaraokeSessionPhase.PLAYING,
-                    statusMessage = if (it.challengeProfile == KaraokeChallengeProfile.HARD && it.challengeActive) {
-                        "Sing it clean to reveal each word"
-                    } else {
-                        "Sing the highlighted words"
-                    }
+                    statusMessage = null
                 )
             }
             persistPlaybackSession()
@@ -872,6 +920,7 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         karaokeCountdownJob?.cancel()
         karaokeCountdownJob = null
         pendingKaraokeStartAfterPreparation = PendingKaraokeStartMode.NONE
+        karaokeSpeechRecognizer.clearAll()
         karaokeMicMonitor.stop()
         karaokeLineVoicedMs.clear()
         karaokeLineInTuneMs.clear()
@@ -893,6 +942,7 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         _karaokeUiState.value = KaraokeUiState(
             challengeEnabled = false,
             challengeProfile = previous.challengeProfile,
+            headphonesConnected = previous.headphonesConnected,
             stemProviderAvailable = previous.stemProviderAvailable,
             preparationInProgress = false,
             backingTrackReady = previous.backingTrackReady,
@@ -901,7 +951,8 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
             melodyLoading = previous.melodyLoading,
             melodyReady = previous.melodyReady,
             statusMessage = if (previous.backingTrackReady) "Using cached karaoke instrumental" else null,
-            revealedWordIndexByLine = emptyMap()
+            revealedWordIndexByLine = emptyMap(),
+            failedLineIndices = emptySet()
         )
 
         if (pausePlayback) {
@@ -1231,94 +1282,62 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
 
         val parsed = resolvedLyrics()
         val activeWord = parsed?.lines?.takeIf { parsedAvailable }?.let { LyricsSync.currentWordPosition(it, positionMs) }
-        val activeWordReference = activeWord?.let { karaokeMelodyReference?.wordFor(it.lineIndex, it.wordIndex) }
-        val latestPitchHz = latestMicSample.pitchHz
-        val activePitchMatch = if (activeWordReference?.expectedPitchHz != null && latestPitchHz != null) {
-            KaraokePitchMath.comparePitch(latestPitchHz, activeWordReference.expectedPitchHz)
-        } else {
-            null
-        }
-
-        if (activeWord != null || karaokeState.targetPitchHz != null || karaokeState.pitchErrorCents != null) {
+        if (activeWord != null || karaokeState.activeLineIndex >= 0 || karaokeState.activeWordIndex >= 0) {
             _karaokeUiState.update {
                 it.copy(
                     activeLineIndex = activeWord?.lineIndex ?: it.activeLineIndex,
                     activeWordIndex = activeWord?.wordIndex ?: it.activeWordIndex,
-                    targetPitchHz = activeWordReference?.expectedPitchHz,
-                    targetNoteLabel = KaraokePitchMath.noteLabel(activeWordReference?.expectedPitchHz),
-                    pitchErrorCents = activePitchMatch?.centsError,
-                    pitchMatched = activePitchMatch?.inTune ?: false,
-                    pitchRating = activePitchMatch?.rating
+                    targetPitchHz = null,
+                    targetNoteLabel = null,
+                    pitchErrorCents = null,
+                    pitchMatched = false,
+                    pitchRating = null
                 )
             }
         }
 
-        val shouldRevealActiveWord = when {
-            !karaokeState.challengeActive || !karaokeState.challengeProfile.hidesLyricsUntilMatched || activeWord == null -> false
-            activeWordReference?.expectedPitchHz != null -> activePitchMatch?.inTune == true
-            else -> latestMicSample.voiced
-        }
-        if (shouldRevealActiveWord && activeWord != null) {
-            _karaokeUiState.update {
-                val revealedWordIndex = it.revealedWordIndexByLine[activeWord.lineIndex] ?: -1
-                if (activeWord.wordIndex <= revealedWordIndex) {
-                    it
-                } else {
-                    it.copy(
-                        revealedWordIndexByLine = it.revealedWordIndexByLine + (activeWord.lineIndex to activeWord.wordIndex)
-                    )
-                }
-            }
-        }
-
-        if (karaokeState.sessionPhase != KaraokeSessionPhase.PLAYING || !isPlaying) {
+        if (karaokeState.sessionPhase != KaraokeSessionPhase.PLAYING || !isPlaying || karaokeState.challengePausedForHeadphones) {
             lastKaraokePositionMs = positionMs
             return
         }
 
-        val lastPosition = lastKaraokePositionMs ?: positionMs
-        val deltaMs = (positionMs - lastPosition).coerceIn(0L, 96L)
+        val currentLineIndex = activeWord?.lineIndex ?: _lyricsUiState.value.currentLineIndex
+        if (karaokeState.challengeActive && currentLineIndex >= 0 && karaokeState.livesRemaining > 0) {
+            karaokeSpeechRecognizer.activateLine(currentLineIndex)
+        }
+
         lastKaraokePositionMs = positionMs
 
-        val currentLineIndex = activeWord?.lineIndex ?: _lyricsUiState.value.currentLineIndex
-        if (currentLineIndex >= 0 && latestMicSample.voiced && deltaMs > 0L) {
-            karaokeLineVoicedMs[currentLineIndex] = (karaokeLineVoicedMs[currentLineIndex] ?: 0L) + deltaMs
-        }
-        if (currentLineIndex >= 0 && activePitchMatch?.inTune == true && deltaMs > 0L) {
-            karaokeLineInTuneMs[currentLineIndex] = (karaokeLineInTuneMs[currentLineIndex] ?: 0L) + deltaMs
-        }
-
         for (window in karaokeLineWindows) {
-            if (window.lineIndex in karaokeResolvedLines) continue
+            if (window.lineIndex in karaokeResolvedLines || window.lineIndex in karaokeState.failedLineIndices) continue
             if (positionMs <= window.endTimeMs + KARAOKE_LINE_EVALUATION_GRACE_MS) break
 
-            val voicedDuration = karaokeLineVoicedMs[window.lineIndex] ?: 0L
-            val inTuneDuration = karaokeLineInTuneMs[window.lineIndex] ?: 0L
-            val lineHasMelody = karaokeMelodyReference?.hasMelodyForLine(window.lineIndex) == true
-            val linePassed = when {
-                !karaokeState.challengeActive -> true
-                lineHasMelody -> inTuneDuration >= (karaokeMelodyReference?.requiredInTuneMs(window.lineIndex) ?: Long.MAX_VALUE)
-                else -> voicedDuration >= window.requiredVoicedMs
-            }
-
-            if (linePassed) {
+            if (!karaokeState.challengeEnabled) {
                 karaokeResolvedLines += window.lineIndex
                 _karaokeUiState.update {
                     it.copy(
-                        combo = if (it.challengeActive) it.combo + 1 else it.combo,
                         clearedLines = karaokeResolvedLines.size,
-                        statusMessage = when {
-                            !it.challengeActive -> "In sync"
-                            it.challengeProfile.hidesLyricsUntilMatched && lineHasMelody -> "On pitch — line revealed"
-                            it.challengeProfile.hidesLyricsUntilMatched -> "Locked in — line revealed"
-                            lineHasMelody -> "On pitch"
-                            else -> "Locked in"
-                        },
-                        revealedWordIndexByLine = if (it.challengeProfile.hidesLyricsUntilMatched) {
-                            it.revealedWordIndexByLine + (window.lineIndex to Int.MAX_VALUE)
-                        } else {
-                            it.revealedWordIndexByLine
-                        }
+                        statusMessage = null
+                    )
+                }
+                continue
+            }
+
+            if (karaokeState.livesRemaining <= 0) break
+
+            val match = KaraokeLineSpeechMatcher.evaluate(
+                expectedLine = window.text,
+                transcriptAlternatives = karaokeSpeechRecognizer.snapshotCandidates(window.lineIndex)
+            )
+            karaokeSpeechRecognizer.clearLine(window.lineIndex)
+
+            if (match.isMatch) {
+                karaokeResolvedLines += window.lineIndex
+                _karaokeUiState.update {
+                    it.copy(
+                        combo = it.combo + 1,
+                        clearedLines = karaokeResolvedLines.size,
+                        statusMessage = null
                     )
                 }
                 continue
@@ -1331,88 +1350,43 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
 
     private fun handleKaraokeMiss(window: KaraokeLineWindow) {
         val currentState = _karaokeUiState.value
-        if (!currentState.challengeActive) return
+        if (!currentState.challengeEnabled) return
 
-        playerController.pause()
+        karaokeSpeechRecognizer.clearLine(window.lineIndex)
         val remainingLives = (currentState.livesRemaining - 1).coerceAtLeast(0)
-        val rewindLineIndex = KaraokeTimingJudge.rewindTargetLineIndex(window.lineIndex)
-        val rewindPositionMs = KaraokeTimingJudge.windowForLine(karaokeLineWindows, rewindLineIndex)?.startTimeMs ?: 0L
-
-        if (remainingLives == 0) {
-            resetKaraokeProgressFrom(0)
-            playerController.seekTo(0L)
-            _karaokeUiState.update {
-                it.copy(
-                    sessionPhase = KaraokeSessionPhase.FAILED,
-                    livesRemaining = 0,
-                    combo = 0,
-                    countdownSeconds = 5,
-                    statusMessage = "No lives left — restarting the song"
-                )
-            }
-            startKaraokeCountdown(
-                seconds = 5,
-                phase = KaraokeSessionPhase.FAILED,
-                statusMessage = "Five-second reset"
-            ) {
-                playerController.seekTo(0L)
-                playerController.play()
-                _karaokeUiState.update {
-                    it.copy(
-                        sessionPhase = KaraokeSessionPhase.PLAYING,
-                        livesRemaining = it.maxLives,
-                        combo = 0,
-                        clearedLines = 0,
-                        statusMessage = "Fresh run — take it from the top"
-                    )
-                }
-                persistPlaybackSession()
-            }
-            return
-        }
-
-        resetKaraokeProgressFrom(rewindLineIndex)
-        playerController.seekTo(rewindPositionMs)
         _karaokeUiState.update {
             it.copy(
-                sessionPhase = KaraokeSessionPhase.MISSED,
                 livesRemaining = remainingLives,
                 combo = 0,
-                countdownSeconds = 5,
-                statusMessage = "Missed the cue — back two lines"
+                statusMessage = null,
+                failedLineIndices = it.failedLineIndices + window.lineIndex
             )
         }
-        startKaraokeCountdown(
-            seconds = 5,
-            phase = KaraokeSessionPhase.MISSED,
-            statusMessage = "Catch the re-entry"
-        ) {
-            playerController.play()
-            _karaokeUiState.update {
-                it.copy(
-                    sessionPhase = KaraokeSessionPhase.PLAYING,
-                    statusMessage = "Back in — follow the highlighted words"
-                )
-            }
-            persistPlaybackSession()
+
+        if (remainingLives == 0) {
+            karaokeSpeechRecognizer.cancelActive()
         }
     }
 
     private fun handleKaraokeSuccess() {
         karaokeCountdownJob?.cancel()
+        karaokeSpeechRecognizer.cancelActive()
         karaokeMicMonitor.stop()
         val finalState = _karaokeUiState.value
+        val challengeSucceeded = !finalState.challengeEnabled || finalState.livesRemaining > 0
         _karaokeUiState.update {
             it.copy(
-                sessionPhase = KaraokeSessionPhase.SUCCESS,
+                sessionPhase = if (challengeSucceeded) KaraokeSessionPhase.SUCCESS else KaraokeSessionPhase.FAILED,
                 countdownSeconds = 0,
                 pitchErrorCents = null,
                 pitchMatched = false,
                 pitchRating = null,
-                statusMessage = if (it.challengeActive) "Track cleared — beautiful run" else "Song complete"
+                statusMessage = if (challengeSucceeded && !it.challengeEnabled) "Song complete" else null
             )
         }
-        recordGameScore(GameModeOption.KARAOKE, karaokeCompletionScore(finalState))
+        if (challengeSucceeded) {
+            recordGameScore(GameModeOption.KARAOKE, karaokeCompletionScore(finalState))
+        }
     }
 
     private fun karaokeCompletionScore(state: KaraokeUiState): Int {
@@ -1470,6 +1444,7 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         lyricsJob?.cancel()
         melodyJob?.cancel()
         karaokeCountdownJob?.cancel()
+        karaokeSpeechRecognizer.release()
         karaokeMicMonitor.release()
         audioAnalyzer.release()
         playerController.release()
@@ -1877,22 +1852,10 @@ class VisualizerViewModel(application: Application) : AndroidViewModel(applicati
         backingTrackReady: Boolean
     ): String? {
         if (!enabled) return null
-        return when {
-            melodyReady -> when (profile) {
-                KaraokeChallengeProfile.EASY -> "Easy challenge armed — artist vocals stay in while your timing and pitch are scored."
-                KaraokeChallengeProfile.VOICELESS -> "Voiceless challenge armed — the instrumental is ready for your run."
-                KaraokeChallengeProfile.HARD -> "Hard challenge armed — vocals stay muted and lyrics reveal only when you lock in."
-            }
-            stemProviderAvailable || backingTrackReady -> when (profile) {
-                KaraokeChallengeProfile.EASY -> "Easy challenge keeps the artist vocal and will finish its melody map when you start."
-                KaraokeChallengeProfile.VOICELESS -> "Voiceless challenge will finish the instrumental prep when you start."
-                KaraokeChallengeProfile.HARD -> "Hard challenge will finish the instrumental prep and lyric reveal scoring when you start."
-            }
-            else -> when (profile) {
-                KaraokeChallengeProfile.EASY -> "Easy challenge still needs LALAL.AI karaoke prep for pitch scoring, but this build is not configured for it."
-                KaraokeChallengeProfile.VOICELESS -> "Voiceless challenge needs LALAL.AI karaoke prep, but this build is not configured for it."
-                KaraokeChallengeProfile.HARD -> "Hard challenge needs LALAL.AI karaoke prep, but this build is not configured for it."
-            }
+        return if (_karaokeUiState.value.headphonesConnected) {
+            "Challenge mode listens for each lyric line through your mic."
+        } else {
+            "Connect headphones to use challenge mode."
         }
     }
 
